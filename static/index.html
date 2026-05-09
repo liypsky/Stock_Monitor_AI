@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A股实时监控中心</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root { --primary: #d81e06; --bg: #f5f5f5; --card: #fff; --up: #f43f3e; --down: #00b42a; }
+        body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin: 20px 0 10px 0; }
+        .section-title { font-size: 1.1em; font-weight: bold; border-left: 4px solid var(--primary); padding-left: 10px; }
+        .index-board { display: flex; gap: 15px; margin-bottom: 20px; overflow-x: auto; padding-bottom: 5px; }
+        .index-card { flex: 1; min-width: 140px; background: var(--card); padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: center; transition: transform 0.2s; position: relative; }
+        .index-card:hover { transform: translateY(-2px); }
+        .index-name { font-size: 0.9em; color: #666; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .index-price { font-size: 1.4em; font-weight: bold; }
+        .index-change { font-size: 0.9em; margin-top: 5px; }
+        
+        .controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .input-group { display: flex; gap: 10px; }
+        input { padding: 8px; border: 1px solid #ddd; border-radius: 4px; width: 150px; }
+        .btn { padding: 8px 16px; background: var(--primary); color: white; border: none; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; }
+        .btn:hover { opacity: 0.9; }
+        .btn-secondary { background: #64748b; }
+
+        table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 8px; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #fafafa; cursor: pointer; user-select: none; font-weight: 600; color: #475569; }
+        th:hover { background: #f1f5f9; }
+        .up { color: var(--up); } .down { color: var(--down); }
+        
+        #detail-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; justify-content: center; align-items: center; }
+        .detail-content { background: #fff; width: 90%; max-width: 900px; padding: 20px; border-radius: 8px; position: relative; }
+        .close-btn { position: absolute; top: 10px; right: 15px; font-size: 24px; cursor: pointer; color: #666; }
+        .chart-container { height: 400px; margin-top: 20px; }
+        
+        /* 添加指数输入框样式 */
+        #index-input-area { display: none; margin-bottom: 15px; background:#fff; padding:10px; border-radius:8px; border: 1px solid #eee; }
+        
+        /* 加载状态样式 */
+        .loading-text { color: #999; font-style: italic; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 指数看板 -->
+        <div class="section-header">
+            <div class="section-title">📊 大盘指数 (可配置)</div>
+            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="toggleIndexInput()">+ 添加指数</button>
+        </div>
+        
+        <div id="index-input-area">
+            <div class="input-group">
+                <input type="text" id="index-input" placeholder="指数代码 (如 sh000300)">
+                <button class="btn" onclick="addIndex()">确认添加</button>
+            </div>
+            <div style="font-size:12px; color:#999; margin-top:5px;">最多显示8个</div>
+        </div>
+
+        <div id="index-board" class="index-board">
+            <div style="color:#999; padding:10px;">加载中...</div>
+        </div>
+
+        <!-- 自选股列表 -->
+        <div class="section-header">
+            <div class="section-title">🚀 自选个股</div>
+        </div>
+        
+        <div class="controls">
+            <div style="font-size: 0.9em; color: #666;">点击表头可排序 | 数据每3秒刷新</div>
+            <div class="input-group">
+                <input type="text" id="stock-input" placeholder="个股代码 (如 sh600519)" onkeypress="if(event.keyCode==13) addStock()">
+                <button class="btn" onclick="addStock()">添加监控</button>
+            </div>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th onclick="sortTable('symbol')">代码</th>
+                    <th onclick="sortTable('name')">名称</th>
+                    <th onclick="sortTable('price')">当前价</th>
+                    <th onclick="sortTable('change_percent')">涨跌幅 ⇅</th>
+                    <th onclick="sortTable('high')">最高</th>
+                    <th onclick="sortTable('low')">最低</th>
+                    <th onclick="sortTable('volume')">成交额 ⇅</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody id="stock-table-body"></tbody>
+        </table>
+    </div>
+
+    <!-- 详情弹窗 -->
+    <div id="detail-view">
+        <div class="detail-content">
+            <span class="close-btn" onclick="closeDetail()">&times;</span>
+            <h2 id="detail-title" style="margin-top:0;"></h2>
+            <div class="chart-container">
+                <canvas id="detail-chart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allData = [];
+        let configIndices = [];
+        let configStocks = [];
+        let sortCol = 'change_percent';
+        let sortAsc = false;
+        let chartInstance = null;
+
+        async function init() {
+            await refreshAll();
+            setInterval(refreshDataOnly, 3000);
+        }
+
+        // 刷新配置和数据
+        async function refreshAll() {
+            await loadConfig();
+            await fetchData();
+            render();
+        }
+
+        // 仅刷新数据（用于定时任务）
+        async function refreshDataOnly() {
+            await fetchData();
+            render();
+        }
+
+        async function loadConfig() {
+            try {
+                const res = await fetch('/api/config');
+                const config = await res.json();
+                configIndices = config.indices;
+                configStocks = config.stocks;
+                console.log("Config loaded:", config);
+            } catch (e) {
+                console.error("Load config error:", e);
+            }
+        }
+
+        async function fetchData() {
+            try {
+                const res = await fetch('/api/market');
+                allData = await res.json();
+                console.log("Data fetched:", allData.length, "items");
+            } catch (e) {
+                console.error("Fetch data error:", e);
+            }
+        }
+
+        function render() {
+            renderIndices();
+            renderTable();
+        }
+
+        function renderIndices() {
+            const board = document.getElementById('index-board');
+            board.innerHTML = '';
+            
+            // 优化：不过滤掉未找到数据的指数，而是显示加载状态
+            const indicesData = configIndices.map(code => {
+                const data = allData.find(d => d.symbol === code);
+                return { code, data };
+            });
+            
+            if (indicesData.length === 0) {
+                board.innerHTML = '<div style="color:#999; padding:10px;">暂无指数配置</div>';
+                return;
+            }
+
+            indicesData.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'index-card';
+                
+                if (!item.data) {
+                    // 数据尚未获取到
+                    div.innerHTML = `
+                        <div class="index-name">${item.code}</div>
+                        <div class="index-price loading-text">--</div>
+                        <div class="index-change loading-text">加载中...</div>
+                    `;
+                } else {
+                    const idx = item.data;
+                    const colorClass = idx.change_percent >= 0 ? 'up' : 'down';
+                    const sign = idx.change_percent >= 0 ? '+' : '';
+                    div.innerHTML = `
+                        <div class="index-name">${idx.name}</div>
+                        <div class="index-price ${colorClass}">${idx.price.toFixed(2)}</div>
+                        <div class="index-change ${colorClass}">${sign}${idx.change_percent.toFixed(2)}%</div>
+                    `;
+                }
+                board.appendChild(div);
+            });
+        }
+
+        function renderTable() {
+            const tbody = document.getElementById('stock-table-body');
+            tbody.innerHTML = '';
+            
+            // 优化：构建包含代码和数据的对象数组，不过滤掉 undefined
+            let stocksData = configStocks.map(code => {
+                const data = allData.find(d => d.symbol === code);
+                return { code, data };
+            });
+
+            // 排序逻辑调整：如果数据不存在，排在最后或保持原序
+            stocksData.sort((a, b) => {
+                // 如果排序列是数据字段，且其中一个数据缺失，处理一下
+                if (sortCol !== 'symbol' && sortCol !== 'name') {
+                    if (!a.data && !b.data) return 0;
+                    if (!a.data) return 1; // 无数据的排后面
+                    if (!b.data) return -1;
+                }
+
+                let valA, valB;
+                if (sortCol === 'symbol' || sortCol === 'name') {
+                    valA = a.code; // 如果没数据，用代码排序
+                    valB = b.code;
+                    if (a.data) valA = a.data[sortCol];
+                    if (b.data) valB = b.data[sortCol];
+                } else {
+                    valA = a.data ? a.data[sortCol] : -999999; // 数值型默认最小
+                    valB = b.data ? b.data[sortCol] : -999999;
+                }
+
+                if (typeof valA === 'string') return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                return sortAsc ? (valA - valB) : (valB - valA);
+            });
+
+            if (stocksData.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:20px;">暂无自选股，请添加</td></tr>';
+                return;
+            }
+
+            stocksData.forEach(item => {
+                const tr = document.createElement('tr');
+                
+                if (!item.data) {
+                    // 数据尚未获取到的情况
+                    tr.innerHTML = `
+                        <td>${item.code}</td>
+                        <td class="loading-text">加载中...</td>
+                        <td class="loading-text">--</td>
+                        <td class="loading-text">--</td>
+                        <td class="loading-text">--</td>
+                        <td class="loading-text">--</td>
+                        <td class="loading-text">--</td>
+                        <td><span class="loading-text">等待数据</span></td>
+                    `;
+                } else {
+                    const s = item.data;
+                    const colorClass = s.change_percent >= 0 ? 'up' : 'down';
+                    const sign = s.change_percent >= 0 ? '+' : '';
+                    tr.innerHTML = `
+                        <td>${s.symbol}</td>
+                        <td>${s.name}</td>
+                        <td class="${colorClass}" style="font-weight:bold;">${s.price.toFixed(2)}</td>
+                        <td class="${colorClass}">${sign}${s.change_percent.toFixed(2)}%</td>
+                        <td>${s.high.toFixed(2)}</td>
+                        <td>${s.low.toFixed(2)}</td>
+                        <td>${(s.volume/100000000).toFixed(2)}亿</td>
+                        <td>
+                            <button class="btn" style="padding:4px 8px;font-size:12px;" onclick="showDetail('${s.symbol}', '${s.name}')">走势</button>
+                        </td>
+                    `;
+                }
+                tbody.appendChild(tr);
+            });
+        }
+
+        function sortTable(col) {
+            if (sortCol === col) sortAsc = !sortAsc;
+            else { sortCol = col; sortAsc = false; }
+            renderTable();
+        }
+
+        function toggleIndexInput() {
+            const area = document.getElementById('index-input-area');
+            area.style.display = area.style.display === 'none' ? 'block' : 'none';
+        }
+
+        async function addStock() {
+            const input = document.getElementById('stock-input');
+            let code = input.value.trim().toLowerCase();
+            if (!code) return;
+            if (!code.startsWith('sh') && !code.startsWith('sz') && !code.startsWith('bj')) {
+                alert("请输入带前缀的代码，如 sh600519");
+                return;
+            }
+
+            console.log("Adding stock:", code);
+            const res = await fetch(`/api/add_stock?code=${code}`);
+            const result = await res.json();
+            console.log("Add result:", result);
+
+            if (result.status === "success") {
+                input.value = '';
+                // 优化：先手动更新本地配置，让用户立即看到行（虽然是加载状态）
+                if (!configStocks.includes(code)) {
+                    configStocks.push(code);
+                }
+                render(); // 立即渲染，显示“加载中”
+                
+                // 然后异步获取最新数据
+                await fetchData(); 
+                render(); // 数据回来后再次渲染
+            } else if (result.status === "exists") {
+                alert("该股票已在列表中");
+                // 即使已存在，也确保数据是最新的
+                await fetchData();
+                render();
+            } else {
+                alert("添加失败: " + result.msg);
+            }
+        }
+
+        async function addIndex() {
+            const input = document.getElementById('index-input');
+            let code = input.value.trim().toLowerCase();
+            if (!code) return;
+            
+            console.log("Adding index:", code);
+            const res = await fetch(`/api/add_index?code=${code}`);
+            const result = await res.json();
+            console.log("Add index result:", result);
+
+            if (result.status === "success") {
+                input.value = '';
+                toggleIndexInput();
+                 // 优化：先手动更新本地配置
+                 if (!configIndices.includes(code)) {
+                    configIndices.push(code);
+                }
+                render();
+                await fetchData();
+                render();
+            } else if (result.status === "full") {
+                alert("指数最多只能添加8个");
+            } else if (result.status === "exists") {
+                alert("该指数已在列表中");
+                await fetchData();
+                render();
+            } else {
+                alert("添加失败: " + result.msg);
+            }
+        }
+
+        function showDetail(symbol, name) {
+            // 只有当数据存在时才显示详情，或者显示错误
+            const stockData = allData.find(d => d.symbol === symbol);
+            if (!stockData) {
+                alert("数据加载中，请稍后再试");
+                return;
+            }
+
+            document.getElementById('detail-view').style.display = 'flex';
+            document.getElementById('detail-title').innerText = `${name} (${symbol})`;
+            renderMockChart();
+        }
+
+        function closeDetail() {
+            document.getElementById('detail-view').style.display = 'none';
+        }
+
+        function renderMockChart() {
+            const ctx = document.getElementById('detail-chart').getContext('2d');
+            if (chartInstance) chartInstance.destroy();
+            const data = Array.from({length: 60}, (_, i) => 30 + Math.random() * 5);
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: Array.from({length: 60}, (_, i) => `${9+Math.floor(i/60)}:${(i%60).toString().padStart(2,'0')}`),
+                    datasets: [{ label: '分时价', data: data, borderColor: '#d81e06', tension: 0.1, pointRadius: 0, fill: true, backgroundColor: 'rgba(216, 30, 6, 0.1)' }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false } }, y: { position: 'right' } } }
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>

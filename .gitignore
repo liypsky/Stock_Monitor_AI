@@ -1,0 +1,19 @@
+target/
+.git/
+
+# 忽略 node_modules 文件夹（前端最常用）
+node_modules/
+
+# 忽略 dist / build 打包文件夹
+dist/
+build/
+
+# 忽略日志、临时文件夹
+logs/
+temp/
+tmp/
+
+# 忽略 .idea 或 .vscode 编辑器配置
+.idea/
+.vscode/
+
