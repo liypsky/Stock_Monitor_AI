@@ -7,7 +7,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root { --primary: #d81e06; --bg: #f5f5f5; --card: #fff; --up: #f43f3e; --down: #00b42a; }
-        body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #333; }
+        body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #333; user-select: none; }
         .container { max-width: 1200px; margin: 0 auto; }
         
         .section-header { display: flex; justify-content: space-between; align-items: center; margin: 20px 0 10px 0; }
@@ -25,6 +25,8 @@
         .btn { padding: 8px 16px; background: var(--primary); color: white; border: none; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; }
         .btn:hover { opacity: 0.9; }
         .btn-secondary { background: #64748b; }
+        .btn-small { padding: 4px 8px; font-size: 12px; margin-right: 5px; }
+        .btn-ai { background: #7c3aed; }
 
         table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 8px; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
         th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; }
@@ -32,16 +34,44 @@
         th:hover { background: #f1f5f9; }
         .up { color: var(--up); } .down { color: var(--down); }
         
+        /* 拖拽样式 */
+        tr.dragging { opacity: 0.5; background: #f0f0f0; }
+        tr.drag-over { border-top: 2px solid var(--primary); }
+
+        /* 右键菜单 */
+        #context-menu {
+            display: none;
+            position: absolute;
+            z-index: 1000;
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 5px 0;
+            min-width: 120px;
+        }
+        #context-menu div {
+            padding: 8px 15px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        #context-menu div:hover { background: #f5f5f5; color: var(--primary); }
+        #context-menu .divider { height: 1px; background: #eee; margin: 5px 0; padding: 0; }
+
         #detail-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; justify-content: center; align-items: center; }
-        .detail-content { background: #fff; width: 90%; max-width: 900px; padding: 20px; border-radius: 8px; position: relative; }
+        .detail-content { background: #fff; width: 90%; max-width: 900px; padding: 20px; border-radius: 8px; position: relative; max-height: 90vh; overflow-y: auto; }
         .close-btn { position: absolute; top: 10px; right: 15px; font-size: 24px; cursor: pointer; color: #666; }
+        .chart-tabs { display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .chart-tab { padding: 5px 15px; cursor: pointer; border-radius: 4px; }
+        .chart-tab.active { background: var(--primary); color: white; }
         .chart-container { height: 400px; margin-top: 20px; }
         
-        /* 添加指数输入框样式 */
         #index-input-area { display: none; margin-bottom: 15px; background:#fff; padding:10px; border-radius:8px; border: 1px solid #eee; }
-        
-        /* 加载状态样式 */
         .loading-text { color: #999; font-style: italic; }
+        
+        /* AI 分析弹窗 */
+        #ai-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 101; justify-content: center; align-items: center; }
+        .ai-content { background: #fff; width: 90%; max-width: 600px; padding: 20px; border-radius: 8px; position: relative; }
     </style>
 </head>
 <body>
@@ -70,9 +100,9 @@
         </div>
         
         <div class="controls">
-            <div style="font-size: 0.9em; color: #666;">点击表头可排序 | 数据每3秒刷新</div>
+            <div style="font-size: 0.9em; color: #666;">提示：支持拖拽排序、右键菜单操作 | 数据每3秒刷新</div>
             <div class="input-group">
-                <input type="text" id="stock-input" placeholder="个股代码 (如 sh600519)" onkeypress="if(event.keyCode==13) addStock()">
+                <input type="text" id="stock-input" placeholder="代码 (如 600519)" onkeypress="if(event.keyCode==13) addStock()">
                 <button class="btn" onclick="addStock()">添加监控</button>
             </div>
         </div>
@@ -94,13 +124,38 @@
         </table>
     </div>
 
+    <!-- 右键菜单 -->
+    <div id="context-menu">
+        <div onclick="contextAction('top')">置顶</div>
+        <div onclick="contextAction('bottom')">置底</div>
+        <div class="divider"></div>
+        <div onclick="contextAction('delete')" style="color: red;">删除</div>
+    </div>
+
     <!-- 详情弹窗 -->
     <div id="detail-view">
         <div class="detail-content">
             <span class="close-btn" onclick="closeDetail()">&times;</span>
             <h2 id="detail-title" style="margin-top:0;"></h2>
+            <div class="chart-tabs">
+                <div class="chart-tab active" onclick="switchChart('day')">分时</div>
+                <div class="chart-tab" onclick="switchChart('kday')">日K</div>
+                <div class="chart-tab" onclick="switchChart('kweek')">周K</div>
+                <div class="chart-tab" onclick="switchChart('kmonth')">月K</div>
+            </div>
             <div class="chart-container">
                 <canvas id="detail-chart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI 分析弹窗 -->
+    <div id="ai-view">
+        <div class="ai-content">
+            <span class="close-btn" onclick="closeAi()">&times;</span>
+            <h2 id="ai-title" style="margin-top:0;">AI 智能分析</h2>
+            <div id="ai-body" style="line-height: 1.6; color: #444; min-height: 100px;">
+                正在分析...
             </div>
         </div>
     </div>
@@ -112,20 +167,25 @@
         let sortCol = 'change_percent';
         let sortAsc = false;
         let chartInstance = null;
+        let currentDetailSymbol = '';
+        let contextMenuTargetCode = '';
 
         async function init() {
             await refreshAll();
             setInterval(refreshDataOnly, 3000);
+            
+            // 全局点击关闭右键菜单
+            document.addEventListener('click', () => {
+                document.getElementById('context-menu').style.display = 'none';
+            });
         }
 
-        // 刷新配置和数据
         async function refreshAll() {
             await loadConfig();
             await fetchData();
             render();
         }
 
-        // 仅刷新数据（用于定时任务）
         async function refreshDataOnly() {
             await fetchData();
             render();
@@ -137,7 +197,6 @@
                 const config = await res.json();
                 configIndices = config.indices;
                 configStocks = config.stocks;
-                console.log("Config loaded:", config);
             } catch (e) {
                 console.error("Load config error:", e);
             }
@@ -147,7 +206,6 @@
             try {
                 const res = await fetch('/api/market');
                 allData = await res.json();
-                console.log("Data fetched:", allData.length, "items");
             } catch (e) {
                 console.error("Fetch data error:", e);
             }
@@ -161,8 +219,6 @@
         function renderIndices() {
             const board = document.getElementById('index-board');
             board.innerHTML = '';
-            
-            // 优化：不过滤掉未找到数据的指数，而是显示加载状态
             const indicesData = configIndices.map(code => {
                 const data = allData.find(d => d.symbol === code);
                 return { code, data };
@@ -176,14 +232,8 @@
             indicesData.forEach(item => {
                 const div = document.createElement('div');
                 div.className = 'index-card';
-                
                 if (!item.data) {
-                    // 数据尚未获取到
-                    div.innerHTML = `
-                        <div class="index-name">${item.code}</div>
-                        <div class="index-price loading-text">--</div>
-                        <div class="index-change loading-text">加载中...</div>
-                    `;
+                    div.innerHTML = `<div class="index-name">${item.code}</div><div class="index-price loading-text">--</div><div class="index-change loading-text">加载中...</div>`;
                 } else {
                     const idx = item.data;
                     const colorClass = idx.change_percent >= 0 ? 'up' : 'down';
@@ -202,32 +252,27 @@
             const tbody = document.getElementById('stock-table-body');
             tbody.innerHTML = '';
             
-            // 优化：构建包含代码和数据的对象数组，不过滤掉 undefined
             let stocksData = configStocks.map(code => {
                 const data = allData.find(d => d.symbol === code);
                 return { code, data };
             });
 
-            // 排序逻辑调整：如果数据不存在，排在最后或保持原序
+            // 排序逻辑
             stocksData.sort((a, b) => {
-                // 如果排序列是数据字段，且其中一个数据缺失，处理一下
                 if (sortCol !== 'symbol' && sortCol !== 'name') {
                     if (!a.data && !b.data) return 0;
-                    if (!a.data) return 1; // 无数据的排后面
+                    if (!a.data) return 1;
                     if (!b.data) return -1;
                 }
-
                 let valA, valB;
                 if (sortCol === 'symbol' || sortCol === 'name') {
-                    valA = a.code; // 如果没数据，用代码排序
-                    valB = b.code;
+                    valA = a.code; valB = b.code;
                     if (a.data) valA = a.data[sortCol];
                     if (b.data) valB = b.data[sortCol];
                 } else {
-                    valA = a.data ? a.data[sortCol] : -999999; // 数值型默认最小
+                    valA = a.data ? a.data[sortCol] : -999999;
                     valB = b.data ? b.data[sortCol] : -999999;
                 }
-
                 if (typeof valA === 'string') return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
                 return sortAsc ? (valA - valB) : (valB - valA);
             });
@@ -239,9 +284,19 @@
 
             stocksData.forEach(item => {
                 const tr = document.createElement('tr');
+                tr.dataset.code = item.code;
+                tr.draggable = true; // 启用拖拽
                 
+                // 拖拽事件
+                tr.addEventListener('dragstart', handleDragStart);
+                tr.addEventListener('dragover', handleDragOver);
+                tr.addEventListener('drop', handleDrop);
+                tr.addEventListener('dragend', handleDragEnd);
+                
+                // 右键菜单
+                tr.addEventListener('contextmenu', (e) => showContextMenu(e, item.code));
+
                 if (!item.data) {
-                    // 数据尚未获取到的情况
                     tr.innerHTML = `
                         <td>${item.code}</td>
                         <td class="loading-text">加载中...</td>
@@ -265,7 +320,8 @@
                         <td>${s.low.toFixed(2)}</td>
                         <td>${(s.volume/100000000).toFixed(2)}亿</td>
                         <td>
-                            <button class="btn" style="padding:4px 8px;font-size:12px;" onclick="showDetail('${s.symbol}', '${s.name}')">走势</button>
+                            <button class="btn btn-small" onclick="showDetail('${s.symbol}', '${s.name}')">详情</button>
+                            <button class="btn btn-small btn-ai" onclick="showAiAnalysis('${s.symbol}', '${s.name}')">AI 分析</button>
                         </td>
                     `;
                 }
@@ -273,6 +329,111 @@
             });
         }
 
+        // --- 拖拽排序逻辑 ---
+        let dragSrcEl = null;
+
+        function handleDragStart(e) {
+            dragSrcEl = this;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/html', this.innerHTML);
+            this.classList.add('dragging');
+        }
+
+        function handleDragOver(e) {
+            if (e.preventDefault) e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            this.classList.add('drag-over');
+            return false;
+        }
+
+        function handleDragEnd(e) {
+            this.classList.remove('dragging');
+            document.querySelectorAll('tr').forEach(col => col.classList.remove('drag-over'));
+        }
+
+        function handleDrop(e) {
+            if (e.stopPropagation) e.stopPropagation();
+            if (dragSrcEl !== this) {
+                // 交换 DOM 位置
+                const tbody = document.getElementById('stock-table-body');
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const srcIndex = rows.indexOf(dragSrcEl);
+                const targetIndex = rows.indexOf(this);
+
+                if (srcIndex < targetIndex) {
+                    this.after(dragSrcEl);
+                } else {
+                    this.before(dragSrcEl);
+                }
+
+                // 更新本地配置顺序并保存到后端
+                updateStockOrderFromDom();
+            }
+            return false;
+        }
+
+        async function updateStockOrderFromDom() {
+            const tbody = document.getElementById('stock-table-body');
+            const newOrder = Array.from(tbody.querySelectorAll('tr')).map(tr => tr.dataset.code);
+            configStocks = newOrder; // 更新本地内存
+            
+            // 发送到后端持久化
+            try {
+                await fetch('/api/reorder_stocks', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ stocks: newOrder })
+                });
+            } catch (e) {
+                console.error("Failed to save order", e);
+            }
+        }
+
+        // --- 右键菜单逻辑 ---
+        function showContextMenu(e, code) {
+            e.preventDefault();
+            contextMenuTargetCode = code;
+            const menu = document.getElementById('context-menu');
+            menu.style.display = 'block';
+            menu.style.left = `${e.pageX}px`;
+            menu.style.top = `${e.pageY}px`;
+        }
+
+        async function contextAction(action) {
+            const code = contextMenuTargetCode;
+            if (!code) return;
+
+            if (action === 'delete') {
+                if(confirm(`确定删除 ${code} 吗？`)) {
+                    await fetch('/api/remove_stock', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ code: code })
+                    });
+                    // 本地移除
+                    configStocks = configStocks.filter(c => c !== code);
+                    render();
+                }
+            } else if (action === 'top' || action === 'bottom') {
+                const idx = configStocks.indexOf(code);
+                if (idx > -1) {
+                    configStocks.splice(idx, 1);
+                    if (action === 'top') configStocks.unshift(code);
+                    else configStocks.push(code);
+                    
+                    // 保存到后端
+                    await fetch('/api/reorder_stocks', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ stocks: configStocks })
+                    });
+                    render();
+                }
+            }
+            document.getElementById('context-menu').style.display = 'none';
+        }
+
+        // --- 其他功能 ---
         function sortTable(col) {
             if (sortCol === col) sortAsc = !sortAsc;
             else { sortCol = col; sortAsc = false; }
@@ -286,32 +447,25 @@
 
         async function addStock() {
             const input = document.getElementById('stock-input');
-            let code = input.value.trim().toLowerCase();
+            let code = input.value.trim();
             if (!code) return;
-            if (!code.startsWith('sh') && !code.startsWith('sz') && !code.startsWith('bj')) {
-                alert("请输入带前缀的代码，如 sh600519");
-                return;
-            }
-
+            
+            // 前端不再强制校验前缀，交给后端处理
             console.log("Adding stock:", code);
             const res = await fetch(`/api/add_stock?code=${code}`);
             const result = await res.json();
-            console.log("Add result:", result);
 
             if (result.status === "success") {
                 input.value = '';
-                // 优化：先手动更新本地配置，让用户立即看到行（虽然是加载状态）
-                if (!configStocks.includes(code)) {
-                    configStocks.push(code);
+                const finalCode = result.code || code; // 使用后端返回的标准化代码
+                if (!configStocks.includes(finalCode)) {
+                    configStocks.push(finalCode);
                 }
-                render(); // 立即渲染，显示“加载中”
-                
-                // 然后异步获取最新数据
+                render();
                 await fetchData(); 
-                render(); // 数据回来后再次渲染
+                render();
             } else if (result.status === "exists") {
                 alert("该股票已在列表中");
-                // 即使已存在，也确保数据是最新的
                 await fetchData();
                 render();
             } else {
@@ -324,15 +478,12 @@
             let code = input.value.trim().toLowerCase();
             if (!code) return;
             
-            console.log("Adding index:", code);
             const res = await fetch(`/api/add_index?code=${code}`);
             const result = await res.json();
-            console.log("Add index result:", result);
 
             if (result.status === "success") {
                 input.value = '';
                 toggleIndexInput();
-                 // 优化：先手动更新本地配置
                  if (!configIndices.includes(code)) {
                     configIndices.push(code);
                 }
@@ -350,35 +501,120 @@
             }
         }
 
+        // --- 详情与图表 ---
         function showDetail(symbol, name) {
-            // 只有当数据存在时才显示详情，或者显示错误
-            const stockData = allData.find(d => d.symbol === symbol);
-            if (!stockData) {
-                alert("数据加载中，请稍后再试");
-                return;
-            }
-
+            currentDetailSymbol = symbol;
             document.getElementById('detail-view').style.display = 'flex';
             document.getElementById('detail-title').innerText = `${name} (${symbol})`;
-            renderMockChart();
+            switchChart('day'); // 默认显示分时
         }
 
         function closeDetail() {
             document.getElementById('detail-view').style.display = 'none';
         }
 
-        function renderMockChart() {
+        function switchChart(type) {
+            // 更新 Tab 样式
+            document.querySelectorAll('.chart-tab').forEach(tab => tab.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            renderChart(type);
+        }
+
+        function renderChart(type) {
             const ctx = document.getElementById('detail-chart').getContext('2d');
             if (chartInstance) chartInstance.destroy();
-            const data = Array.from({length: 60}, (_, i) => 30 + Math.random() * 5);
+
+            // 模拟数据生成器
+            const generateData = (count, basePrice, volatility) => {
+                let data = [];
+                let price = basePrice;
+                for(let i=0; i<count; i++) {
+                    price = price * (1 + (Math.random() - 0.5) * volatility);
+                    data.push(price);
+                }
+                return data;
+            };
+
+            let labels = [];
+            let data = [];
+            let labelTitle = '';
+            let color = '#d81e06';
+
+            const stockData = allData.find(d => d.symbol === currentDetailSymbol);
+            const basePrice = stockData ? stockData.price : 10.0;
+
+            if (type === 'day') {
+                labelTitle = '分时价';
+                for(let i=0; i<240; i+=5) { // 模拟4小时交易时间，每5分钟一个点
+                    const h = 9 + Math.floor(i/60);
+                    const m = i%60;
+                    if (h===11 && m>30) continue; // 跳过午休
+                    if (h>=13) labels.push(`${h}:${m.toString().padStart(2,'0')}`);
+                    else labels.push(`${h}:${m.toString().padStart(2,'0')}`);
+                }
+                data = generateData(labels.length, basePrice, 0.002);
+            } else if (type === 'kday') {
+                labelTitle = '日K收盘价';
+                for(let i=30; i>0; i--) labels.push(`T-${i}`);
+                data = generateData(30, basePrice, 0.02);
+                color = '#3b82f6';
+            } else if (type === 'kweek') {
+                labelTitle = '周K收盘价';
+                for(let i=12; i>0; i--) labels.push(`W-${i}`);
+                data = generateData(12, basePrice, 0.05);
+                color = '#10b981';
+            } else if (type === 'kmonth') {
+                labelTitle = '月K收盘价';
+                for(let i=12; i>0; i--) labels.push(`M-${i}`);
+                data = generateData(12, basePrice, 0.1);
+                color = '#8b5cf6';
+            }
+
             chartInstance = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: Array.from({length: 60}, (_, i) => `${9+Math.floor(i/60)}:${(i%60).toString().padStart(2,'0')}`),
-                    datasets: [{ label: '分时价', data: data, borderColor: '#d81e06', tension: 0.1, pointRadius: 0, fill: true, backgroundColor: 'rgba(216, 30, 6, 0.1)' }]
+                    labels: labels,
+                    datasets: [{ 
+                        label: labelTitle, 
+                        data: data, 
+                        borderColor: color, 
+                        tension: 0.1, 
+                        pointRadius: type === 'day' ? 0 : 2, 
+                        fill: true, 
+                        backgroundColor: color + '20' 
+                    }]
                 },
-                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false } }, y: { position: 'right' } } }
+                options: { 
+                    responsive: true, 
+                    maintainAspectRatio: false, 
+                    plugins: { legend: { display: false } }, 
+                    scales: { x: { grid: { display: false } }, y: { position: 'right' } } 
+                }
             });
+        }
+
+        // --- AI 分析 ---
+        async function showAiAnalysis(symbol, name) {
+            document.getElementById('ai-view').style.display = 'flex';
+            document.getElementById('ai-title').innerText = `${name} (${symbol}) - AI 分析`;
+            document.getElementById('ai-body').innerText = "正在连接 AI 引擎进行分析...";
+            
+            try {
+                const res = await fetch(`/api/ai_analysis?code=${symbol}`);
+                const result = await res.json();
+                if (result.status === 'success') {
+                    document.getElementById('ai-body').innerText = result.analysis;
+                } else {
+                    document.getElementById('ai-body').innerText = "分析失败，请稍后重试。";
+                }
+            } catch (e) {
+                document.getElementById('ai-body').innerText = "网络错误，无法获取分析结果。";
+            }
+        }
+
+        function closeAi() {
+            document.getElementById('ai-view').style.display = 'none';
         }
 
         init();
