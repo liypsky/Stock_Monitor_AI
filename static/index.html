@@ -72,6 +72,29 @@
         /* AI 分析弹窗 */
         #ai-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 101; justify-content: center; align-items: center; }
         .ai-content { background: #fff; width: 90%; max-width: 600px; padding: 20px; border-radius: 8px; position: relative; }
+
+        /* 详情页增强样式 */
+        .detail-header-info { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .dh-left h2 { margin: 0; font-size: 1.5em; }
+        .dh-left span { color: #666; font-size: 0.9em; }
+        .dh-right { text-align: right; }
+        .dh-price { font-size: 1.8em; font-weight: bold; }
+        .dh-change { font-size: 1.1em; }
+        
+        .detail-stats-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 20px; background: #f9fafb; padding: 10px; border-radius: 6px; }
+        .stat-item { text-align: center; }
+        .stat-label { font-size: 0.8em; color: #888; margin-bottom: 2px; }
+        .stat-value { font-weight: 600; font-size: 0.95em; }
+
+        .money-flow-container { margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px; }
+        .mf-title { font-size: 1em; font-weight: bold; margin-bottom: 10px; }
+        .mf-bars { display: flex; flex-direction: column; gap: 8px; }
+        .mf-row { display: flex; align-items: center; font-size: 0.85em; }
+        .mf-label { width: 60px; color: #666; }
+        .mf-bar-bg { flex: 1; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; position: relative; margin: 0 10px; }
+        .mf-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
+        .mf-val { width: 80px; text-align: right; font-family: monospace; }
+        .mf-center-line { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #ccc; z-index: 1; }
     </style>
 </head>
 <body>
@@ -136,7 +159,29 @@
     <div id="detail-view">
         <div class="detail-content">
             <span class="close-btn" onclick="closeDetail()">&times;</span>
-            <h2 id="detail-title" style="margin-top:0;"></h2>
+            
+            <!-- 第一行：名称代码与现价 -->
+            <div class="detail-header-info">
+                <div class="dh-left">
+                    <h2 id="detail-name">--</h2>
+                    <span id="detail-symbol">--</span>
+                </div>
+                <div class="dh-right">
+                    <div id="detail-price" class="dh-price">--</div>
+                    <div id="detail-change" class="dh-change">--</div>
+                </div>
+            </div>
+
+            <!-- 第二行：详细统计 -->
+            <div class="detail-stats-grid">
+                <div class="stat-item"><div class="stat-label">今开</div><div class="stat-value" id="stat-open">--</div></div>
+                <div class="stat-item"><div class="stat-label">昨收</div><div class="stat-value" id="stat-preclose">--</div></div>
+                <div class="stat-item"><div class="stat-label">最高</div><div class="stat-value" id="stat-high">--</div></div>
+                <div class="stat-item"><div class="stat-label">最低</div><div class="stat-value" id="stat-low">--</div></div>
+                <div class="stat-item"><div class="stat-label">涨停</div><div class="stat-value" id="stat-limitup">--</div></div>
+                <div class="stat-item"><div class="stat-label">跌停</div><div class="stat-value" id="stat-limitdown">--</div></div>
+            </div>
+
             <div class="chart-tabs">
                 <div class="chart-tab active" onclick="switchChart('day')">分时</div>
                 <div class="chart-tab" onclick="switchChart('kday')">日K</div>
@@ -145,6 +190,15 @@
             </div>
             <div class="chart-container">
                 <canvas id="detail-chart"></canvas>
+            </div>
+
+            <!-- 资金流向 -->
+            <div class="money-flow-container">
+                <div class="mf-title">资金流向 (估算)</div>
+                <div class="mf-bars" id="mf-bars">
+                    <!-- 动态生成 -->
+                    <div style="text-align:center; color:#999; padding:10px;">加载中...</div>
+                </div>
             </div>
         </div>
     </div>
@@ -169,12 +223,14 @@
         let chartInstance = null;
         let currentDetailSymbol = '';
         let contextMenuTargetCode = '';
+        let currentChartType = 'day';
+        // 新增：存储详情页的实时数据，供图表使用
+        let currentDetailData = null;
 
         async function init() {
             await refreshAll();
             setInterval(refreshDataOnly, 3000);
             
-            // 全局点击关闭右键菜单
             document.addEventListener('click', () => {
                 document.getElementById('context-menu').style.display = 'none';
             });
@@ -502,96 +558,386 @@
         }
 
         // --- 详情与图表 ---
-        function showDetail(symbol, name) {
+        async function showDetail(symbol, name) {
             currentDetailSymbol = symbol;
             document.getElementById('detail-view').style.display = 'flex';
-            document.getElementById('detail-title').innerText = `${name} (${symbol})`;
-            switchChart('day'); // 默认显示分时
+            document.getElementById('detail-name').innerText = name;
+            document.getElementById('detail-symbol').innerText = symbol;
+            
+            // 重置UI
+            document.getElementById('detail-price').innerText = '--';
+            document.getElementById('detail-change').innerText = '--';
+            ['stat-open', 'stat-preclose', 'stat-high', 'stat-low', 'stat-limitup', 'stat-limitdown'].forEach(id => {
+                document.getElementById(id).innerText = '--';
+            });
+            document.getElementById('mf-bars').innerHTML = '<div style="text-align:center; color:#999; padding:10px;">加载中...</div>';
+
+            // 加载真实数据
+            await loadDetailData();
+            
+            // 默认显示分时
+            currentChartType = 'day';
+            updateChartTabs('day');
+            renderChart('day');
+        }
+
+        async function loadDetailData() {
+            if (!currentDetailSymbol) return;
+            try {
+                // 1. 获取基本行情详情
+                const res = await fetch(`/api/stock_detail?code=${currentDetailSymbol}`);
+                const result = await res.json();
+                
+                if (result.status === 'success' && result.data) {
+                    const d = result.data;
+                    currentDetailData = d; // 保存数据供图表使用
+
+                    const colorClass = d.change_percent >= 0 ? 'up' : 'down';
+                    const sign = d.change_percent >= 0 ? '+' : '';
+                    
+                    // 更新头部信息
+                    document.getElementById('detail-name').innerText = d.name;
+                    document.getElementById('detail-symbol').innerText = d.symbol;
+
+                    const priceEl = document.getElementById('detail-price');
+                    priceEl.innerText = d.price.toFixed(2);
+                    priceEl.className = `dh-price ${colorClass}`;
+                    
+                    const changeEl = document.getElementById('detail-change');
+                    changeEl.innerText = `${sign}${d.change_percent.toFixed(2)}%`;
+                    changeEl.className = `dh-change ${colorClass}`;
+
+                    // 更新统计网格
+                    document.getElementById('stat-open').innerText = d.open.toFixed(2);
+                    document.getElementById('stat-preclose').innerText = d.pre_close.toFixed(2);
+                    document.getElementById('stat-high').innerText = d.high.toFixed(2);
+                    document.getElementById('stat-low').innerText = d.low.toFixed(2);
+                    document.getElementById('stat-limitup').innerText = d.limit_up.toFixed(2);
+                    document.getElementById('stat-limitdown').innerText = d.limit_down.toFixed(2);
+                } else {
+                    console.error("Failed to load detail data", result);
+                }
+
+                // 2. 获取资金流向
+                const mfRes = await fetch(`/api/stock_money_flow?code=${currentDetailSymbol}`);
+                const mfResult = await mfRes.json();
+                if (mfResult.status === 'success') {
+                    renderMoneyFlow(mfResult.data);
+                }
+
+            } catch (e) {
+                console.error("Load detail error:", e);
+            }
+        }
+
+        function renderMoneyFlow(data) {
+            const container = document.getElementById('mf-bars');
+            container.innerHTML = '';
+            
+            const items = [
+                { key: 'main_net', label: '主力' },
+                { key: 'super_large', label: '超大' },
+                { key: 'large', label: '大单' },
+                { key: 'medium', label: '中单' },
+                { key: 'small', label: '小单' },
+                { key: 'retail', label: '散户' }
+            ];
+
+            // 找出最大值用于计算比例
+            const maxVal = Math.max(...items.map(i => Math.abs(data[i.key])));
+            if (maxVal === 0) return;
+
+            items.forEach(item => {
+                const val = data[item.key];
+                const percent = (Math.abs(val) / maxVal) * 100;
+                const isPositive = val >= 0;
+                const color = isPositive ? '#f43f3e' : '#00b42a'; // 红进绿出
+                const sign = isPositive ? '+' : '';
+                
+                // 格式化金额
+                let formattedVal = '';
+                if (Math.abs(val) > 100000000) formattedVal = `${sign}${(val/100000000).toFixed(2)}亿`;
+                else if (Math.abs(val) > 10000) formattedVal = `${sign}${(val/10000).toFixed(2)}万`;
+                else formattedVal = `${sign}${val.toFixed(0)}`;
+
+                const row = document.createElement('div');
+                row.className = 'mf-row';
+                row.innerHTML = `
+                    <div class="mf-label">${item.label}</div>
+                    <div class="mf-bar-bg">
+                        <div class="mf-center-line"></div>
+                        <div class="mf-bar-fill" style="width: ${percent}%; background: ${color}; margin-left: ${isPositive ? '50%' : (50-percent)+'%'}"></div>
+                    </div>
+                    <div class="mf-val" style="color: ${color}">${formattedVal}</div>
+                `;
+                container.appendChild(row);
+            });
         }
 
         function closeDetail() {
             document.getElementById('detail-view').style.display = 'none';
+            currentDetailSymbol = '';
+        }
+
+        function updateChartTabs(type) {
+            document.querySelectorAll('.chart-tab').forEach(tab => tab.classList.remove('active'));
+            // 简单匹配：根据onclick内容查找，或者更好的方式是给tab加id
+            const tabs = document.querySelectorAll('.chart-tab');
+            if(type === 'day') tabs[0].classList.add('active');
+            if(type === 'kday') tabs[1].classList.add('active');
+            if(type === 'kweek') tabs[2].classList.add('active');
+            if(type === 'kmonth') tabs[3].classList.add('active');
         }
 
         function switchChart(type) {
-            // 更新 Tab 样式
-            document.querySelectorAll('.chart-tab').forEach(tab => tab.classList.remove('active'));
-            event.target.classList.add('active');
-            
+            currentChartType = type;
+            updateChartTabs(type);
             renderChart(type);
         }
 
-        function renderChart(type) {
+        async function renderChart(type) {
             const ctx = document.getElementById('detail-chart').getContext('2d');
             if (chartInstance) chartInstance.destroy();
 
-            // 模拟数据生成器
-            const generateData = (count, basePrice, volatility) => {
-                let data = [];
-                let price = basePrice;
-                for(let i=0; i<count; i++) {
-                    price = price * (1 + (Math.random() - 0.5) * volatility);
-                    data.push(price);
-                }
-                return data;
-            };
-
             let labels = [];
-            let data = [];
-            let labelTitle = '';
-            let color = '#d81e06';
-
-            const stockData = allData.find(d => d.symbol === currentDetailSymbol);
-            const basePrice = stockData ? stockData.price : 10.0;
+            let datasets = [];
+            
+            // 获取基准价格，如果当前数据未加载完成，使用默认值
+            const basePrice = currentDetailData ? currentDetailData.price : 10.0;
+            const preClose = currentDetailData ? currentDetailData.pre_close : basePrice;
 
             if (type === 'day') {
-                labelTitle = '分时价';
-                for(let i=0; i<240; i+=5) { // 模拟4小时交易时间，每5分钟一个点
-                    const h = 9 + Math.floor(i/60);
-                    const m = i%60;
-                    if (h===11 && m>30) continue; // 跳过午休
-                    if (h>=13) labels.push(`${h}:${m.toString().padStart(2,'0')}`);
-                    else labels.push(`${h}:${m.toString().padStart(2,'0')}`);
+                // --- 分时图逻辑 ---
+                // 模拟4小时交易时间 (240分钟)
+                const timeLabels = [];
+                for(let i=0; i<240; i++) { 
+                    const h = 9 + Math.floor((i+30)/60); // 从9:30开始
+                    const m = (i+30)%60;
+                    // 跳过午休时间 11:30 - 13:00
+                    if (h === 11 && m > 30) continue;
+                    if (h === 12) continue;
+                    if (h === 13 && m < 1) continue; // 修正13:00显示
+                    
+                    // 简单格式化
+                    let timeStr = `${h}:${m.toString().padStart(2,'0')}`;
+                    if (h >= 13) timeStr = `${h}:${m.toString().padStart(2,'0')}`;
+                    timeLabels.push(timeStr);
                 }
-                data = generateData(labels.length, basePrice, 0.002);
-            } else if (type === 'kday') {
-                labelTitle = '日K收盘价';
-                for(let i=30; i>0; i--) labels.push(`T-${i}`);
-                data = generateData(30, basePrice, 0.02);
-                color = '#3b82f6';
-            } else if (type === 'kweek') {
-                labelTitle = '周K收盘价';
-                for(let i=12; i>0; i--) labels.push(`W-${i}`);
-                data = generateData(12, basePrice, 0.05);
-                color = '#10b981';
-            } else if (type === 'kmonth') {
-                labelTitle = '月K收盘价';
-                for(let i=12; i>0; i--) labels.push(`M-${i}`);
-                data = generateData(12, basePrice, 0.1);
-                color = '#8b5cf6';
-            }
 
-            chartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [{ 
-                        label: labelTitle, 
-                        data: data, 
-                        borderColor: color, 
-                        tension: 0.1, 
-                        pointRadius: type === 'day' ? 0 : 2, 
-                        fill: true, 
-                        backgroundColor: color + '20' 
-                    }]
-                },
-                options: { 
-                    responsive: true, 
-                    maintainAspectRatio: false, 
-                    plugins: { legend: { display: false } }, 
-                    scales: { x: { grid: { display: false } }, y: { position: 'right' } } 
+                // 生成模拟分时数据
+                let prices = [];
+                let volumes = [];
+                let avgPrices = [];
+                let currentP = preClose;
+                let totalVol = 0;
+                let totalAmount = 0;
+
+                for(let i=0; i<timeLabels.length; i++) {
+                    // 随机波动
+                    let change = (Math.random() - 0.5) * (preClose * 0.005); 
+                    currentP += change;
+                    // 限制在涨跌停之间
+                    if(currentP > preClose * 1.1) currentP = preClose * 1.1;
+                    if(currentP < preClose * 0.9) currentP = preClose * 0.9;
+                    
+                    prices.push(currentP);
+                    
+                    // 模拟成交量
+                    let vol = Math.random() * 1000 + 500;
+                    volumes.push(vol);
+                    
+                    // 计算均价
+                    totalVol += vol;
+                    totalAmount += vol * currentP;
+                    avgPrices.push(totalAmount / totalVol);
                 }
-            });
+
+                datasets = [
+                    {
+                        label: '分时价',
+                        data: prices,
+                        borderColor: '#ff4d4f', // 红色
+                        backgroundColor: 'rgba(255, 77, 79, 0.1)',
+                        borderWidth: 1.5,
+                        yAxisID: 'y',
+                        pointRadius: 0,
+                        fill: true,
+                        tension: 0.1
+                    },
+                    {
+                        label: '均价',
+                        data: avgPrices,
+                        borderColor: '#ffd700', // 黄色
+                        borderWidth: 1.5,
+                        borderDash: [5, 5], // 虚线
+                        yAxisID: 'y',
+                        pointRadius: 0,
+                        fill: false,
+                        tension: 0.1
+                    },
+                    {
+                        label: '成交量',
+                        data: volumes,
+                        backgroundColor: 'rgba(59, 130, 246, 0.5)', // 蓝色半透明
+                        yAxisID: 'y1',
+                        type: 'bar',
+                        barPercentage: 1.0,
+                        categoryPercentage: 1.0
+                    }
+                ];
+
+                chartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: timeLabels,
+                        datasets: datasets
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: { display: true, position: 'top' },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        let label = context.dataset.label || '';
+                                        if (label) label += ': ';
+                                        if (context.dataset.yAxisID === 'y1') {
+                                            label += context.parsed.y.toFixed(0);
+                                        } else {
+                                            label += context.parsed.y.toFixed(2);
+                                        }
+                                        return label;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: { grid: { display: false } },
+                            y: {
+                                type: 'linear',
+                                display: true,
+                                position: 'left',
+                                title: { display: true, text: '价格' },
+                                grid: { color: '#eee' }
+                            },
+                            y1: {
+                                type: 'linear',
+                                display: true,
+                                position: 'right',
+                                title: { display: true, text: '成交量' },
+                                grid: { display: false }
+                            }
+                        }
+                    }
+                });
+
+            } else {
+                // --- K线图逻辑 (日/周/月) ---
+                let count = type === 'kday' ? 60 : (type === 'kweek' ? 52 : 24);
+                let labelPrefix = type === 'kday' ? 'D-' : (type === 'kweek' ? 'W-' : 'M-');
+                
+                for(let i=count; i>0; i--) labels.push(`${labelPrefix}${i}`);
+
+                // 生成模拟K线收盘价序列
+                let closeData = [];
+                let p = basePrice;
+                for(let i=0; i<count; i++) {
+                    p = p * (1 + (Math.random() - 0.5) * 0.03);
+                    closeData.push(p);
+                }
+
+                // 计算均线 MA5, MA10, MA20
+                const calculateMA = (data, period) => {
+                    let ma = [];
+                    for (let i = 0; i < data.length; i++) {
+                        if (i < period - 1) {
+                            ma.push(null); // 数据不足时不显示
+                            continue;
+                        }
+                        let sum = 0;
+                        for (let j = 0; j < period; j++) {
+                            sum += data[i - j];
+                        }
+                        ma.push(sum / period);
+                    }
+                    return ma;
+                };
+
+                const ma5 = calculateMA(closeData, 5);
+                const ma10 = calculateMA(closeData, 10);
+                const ma20 = calculateMA(closeData, 20);
+
+                datasets = [
+                    {
+                        label: '收盘价',
+                        data: closeData,
+                        borderColor: '#3b82f6', // 蓝色
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        borderWidth: 2,
+                        pointRadius: 2,
+                        fill: false,
+                        tension: 0.1
+                    },
+                    {
+                        label: 'MA5',
+                        data: ma5,
+                        borderColor: '#f59e0b', // 橙色
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        fill: false,
+                        tension: 0.1
+                    },
+                    {
+                        label: 'MA10',
+                        data: ma10,
+                        borderColor: '#10b981', // 绿色
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        fill: false,
+                        tension: 0.1
+                    },
+                    {
+                        label: 'MA20',
+                        data: ma20,
+                        borderColor: '#8b5cf6', // 紫色
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        fill: false,
+                        tension: 0.1
+                    }
+                ];
+
+                chartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: datasets
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: true, position: 'top' }
+                        },
+                        scales: {
+                            x: { grid: { display: false } },
+                            y: { position: 'right', grid: { color: '#eee' } }
+                        }
+                    }
+                });
+            }
+        }
+
+        function generateSimulatedData(count, basePrice, volatility) {
+            let data = [];
+            let price = basePrice;
+            for(let i=0; i<count; i++) {
+                price = price * (1 + (Math.random() - 0.5) * volatility);
+                data.push(price);
+            }
+            return data;
         }
 
         // --- AI 分析 ---

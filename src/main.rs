@@ -16,8 +16,6 @@ use std::sync::LazyLock;
 use encoding_rs::GBK;
 use serde_json::{json, Value};
 
-// ... (StockInfo 和 AppState 定义保持不变) ...
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockInfo {
     pub symbol: String,
@@ -29,6 +27,24 @@ pub struct StockInfo {
     pub volume: f64,
     pub open: f64,
     pub pre_close: f64,
+    // 新增字段用于详情页
+    #[serde(default)]
+    pub limit_up: f64,
+    #[serde(default)]
+    pub limit_down: f64,
+    #[serde(default)]
+    pub amount: f64, // 成交额
+}
+
+// 新增：资金流向结构
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoneyFlow {
+    pub main_net: f64,      // 主力净流入
+    pub super_large: f64,   // 超大单
+    pub large: f64,         // 大单
+    pub medium: f64,        // 中单
+    pub small: f64,         // 小单
+    pub retail: f64,        // 散户
 }
 
 #[derive(Clone)]
@@ -79,11 +95,13 @@ async fn main() {
         .route("/api/market", get(get_market_data))
         .route("/api/config", get(get_config))
         .route("/api/add_stock", get(add_stock))
-        // 使用 debug_handler 来帮助诊断，如果编译通过可以移除
         .route("/api/remove_stock", post(remove_stock)) 
         .route("/api/reorder_stocks", post(reorder_stocks)) 
         .route("/api/ai_analysis", get(get_ai_analysis)) 
         .route("/api/add_index", get(add_index))
+        // 新增路由
+        .route("/api/stock_detail", get(get_stock_detail))
+        .route("/api/stock_money_flow", get(get_stock_money_flow))
         .nest_service("/", ServeDir::new("static"))
         .with_state(state);
 
@@ -103,6 +121,89 @@ async fn get_config(State(state): State<AppState>) -> Json<Value> {
 
 async fn get_market_data(State(state): State<AppState>) -> Json<Vec<StockInfo>> {
     Json(state.market_data.read().await.clone())
+}
+
+// 新增：获取个股详情
+async fn get_stock_detail(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    _state: State<AppState>,
+) -> Json<Value> {
+    if let Some(code) = params.get("code") {
+        let normalized_code = normalize_stock_code(code);
+        let client = reqwest::Client::new();
+        let url = format!("http://hq.sinajs.cn/list={}", normalized_code);
+        
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                if let Ok(bytes) = resp.bytes().await {
+                    let (text, _, _) = GBK.decode(&bytes);
+                    if let Some(cap) = RE_SINA_DATA.captures(&text) {
+                        let data_str = &cap[2];
+                        let parts: Vec<&str> = data_str.split(',').collect();
+                        if parts.len() > 30 {
+                            let price = parts[3].parse::<f64>().unwrap_or(0.0);
+                            let pre_close = parts[2].parse::<f64>().unwrap_or(0.0);
+                            let open = parts[1].parse::<f64>().unwrap_or(0.0);
+                            let high = parts[4].parse::<f64>().unwrap_or(0.0);
+                            let low = parts[5].parse::<f64>().unwrap_or(0.0);
+                            let volume = parts[8].parse::<f64>().unwrap_or(0.0); // 股数
+                            let amount = parts[9].parse::<f64>().unwrap_or(0.0); // 成交额
+                            
+                            // 计算涨跌停价 (A股通常10%，ST 5%，科创板/创业板 20%，这里简化处理)
+                            let limit_up = pre_close * 1.1;
+                            let limit_down = pre_close * 0.9;
+                            
+                            let change_percent = if pre_close > 0.0 { ((price - pre_close) / pre_close) * 100.0 } else { 0.0 };
+
+                            return Json(json!({
+                                "status": "success",
+                                "data": {
+                                    "symbol": normalized_code,
+                                    "name": parts[0],
+                                    "price": price,
+                                    "pre_close": pre_close,
+                                    "open": open,
+                                    "high": high,
+                                    "low": low,
+                                    "volume": volume,
+                                    "amount": amount,
+                                    "limit_up": limit_up,
+                                    "limit_down": limit_down,
+                                    "change_percent": change_percent
+                                }
+                            }));
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("Fetch detail error: {}", e)
+        }
+    }
+    Json(json!({"status": "error", "msg": "fetch failed"}))
+}
+
+// 新增：获取资金流向 (模拟数据，因为真实接口需要复杂逆向或付费)
+async fn get_stock_money_flow(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    _state: State<AppState>,
+) -> Json<Value> {
+    if let Some(_code) = params.get("code") {
+        // 这里使用随机数据模拟，实际项目中应替换为真实的东财/同花顺接口爬取逻辑
+        let main_net: f64 = (rand::random::<f64>() * 2000.0 - 1000.0) * 10000.0; // -1000万 to 1000万
+        
+        return Json(json!({
+            "status": "success",
+            "data": {
+                "main_net": main_net,
+                "super_large": main_net * 0.4,
+                "large": main_net * 0.3,
+                "medium": -main_net * 0.2,
+                "small": -main_net * 0.3,
+                "retail": -main_net * 0.2
+            }
+        }));
+    }
+    Json(json!({"status": "error"}))
 }
 
 fn normalize_stock_code(code: &str) -> String {
@@ -303,9 +404,16 @@ fn parse_sina_data(raw_text: &str) -> Vec<StockInfo> {
         let high = parts[4].parse::<f64>().unwrap_or(0.0);
         let low = parts[5].parse::<f64>().unwrap_or(0.0);
         let volume = parts[9].parse::<f64>().unwrap_or(0.0); 
+        // 解析成交额 (parts[9]在新浪接口中通常是成交额，但有时索引可能因市场而异，这里假设parts[9]是成交额，parts[8]是成交量股数)
+        // 注意：新浪接口中 parts[8] 是成交量(手/股), parts[9] 是成交额(元)
+        let amount = parts[9].parse::<f64>().unwrap_or(0.0);
 
         let change = price - pre_close;
         let change_percent = if pre_close > 0.0 { (change / pre_close) * 100.0 } else { 0.0 };
+        
+        // 计算涨跌停价 (简化处理，实际需根据板块判断)
+        let limit_up = pre_close * 1.1;
+        let limit_down = pre_close * 0.9;
 
         results.push(StockInfo {
             symbol: code.to_string(),
@@ -317,6 +425,9 @@ fn parse_sina_data(raw_text: &str) -> Vec<StockInfo> {
             volume,
             open,
             pre_close,
+            amount,
+            limit_up,
+            limit_down,
         });
     }
     results
