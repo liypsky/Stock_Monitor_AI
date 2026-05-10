@@ -62,6 +62,18 @@ pub struct MinuteDataPoint {
     pub close: f64,
 }
 
+// 新增：K线数据结构
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KLineDataPoint {
+    pub date: String,   // YYYY-MM-DD
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,    // 手
+    pub amount: f64,    // 元
+}
+
 #[derive(Clone)]
 struct AppState {
     index_list: Arc<RwLock<Vec<String>>>,
@@ -197,7 +209,7 @@ async fn main() {
     let app = Router::new()
         .route("/api/market", get(get_market_data))
         .route("/api/config", get(get_config))
-        .route("/api/update_config", post(update_config)) // 新增路由
+        .route("/api/update_config", post(update_config))
         .route("/api/add_stock", get(add_stock))
         .route("/api/remove_stock", post(remove_stock)) 
         .route("/api/reorder_stocks", post(reorder_stocks)) 
@@ -207,6 +219,7 @@ async fn main() {
         .route("/api/stock_detail", get(get_stock_detail))
         .route("/api/stock_money_flow", get(get_stock_money_flow))
         .route("/api/stock_minute_data", get(get_stock_minute_data))
+        .route("/api/stock_kline_data", get(get_stock_kline_data)) // 新增路由
         .nest_service("/", ServeDir::new("static"))
         .with_state(state);
 
@@ -883,11 +896,15 @@ async fn get_stock_minute_data(
         
         // 1. 尝试获取当天数据 (240条)
         if let Some(data) = fetch_minute_data_from_sina(&normalized_code, 240).await {
-            println!("Fetched {} minute data points for {} (Today)", data.len(), normalized_code);
-            return Json(json!({
-                "status": "success",
-                "data": data
-            }));
+            // 校准：如果数据极少（例如只有1-2条），可能是刚开盘或非交易时间噪音，但通常保留
+            // 如果完全没数据，进入下一步
+            if !data.is_empty() {
+                println!("Fetched {} minute data points for {} (Today)", data.len(), normalized_code);
+                return Json(json!({
+                    "status": "success",
+                    "data": data
+                }));
+            }
         }
 
         // 2. 如果当天无数据（周末/节假日/未开盘），尝试获取最近1000条，并提取最近一个完整交易日
@@ -895,43 +912,175 @@ async fn get_stock_minute_data(
         if let Some(history_data) = fetch_minute_data_from_sina(&normalized_code, 1000).await {
             if !history_data.is_empty() {
                 // 策略：寻找最近的一个完整交易日。
-                // 新浪返回的数据是按时间倒序还是正序？通常是正序（旧->新）。
-                // 我们假设数据是正序的。最后一条数据的时间日期即为最新交易日。
+                // 简单策略：取最后240条。因为新浪返回的是正序（旧->新），最后的是最新的。
+                // 如果最后一条是今天的（即使没数据），前面的可能是昨天的。
+                // 更严谨的做法是按日期分组，但为了性能，取最后240条通常能覆盖最近一个完整交易日
                 
-                    // 注意：我们的 MinuteDataPoint.time 只存了 HH:MM，我们需要原始数据中的日期
-                    // 由于 fetch_minute_data_from_sina 内部已经处理了时间，我们需要重新获取带日期的原始数据或者改进结构体
-                    // 为了简化，我们假设 fetch_minute_data_from_sina 返回的数据中，如果跨天，时间字符串会有变化吗？
-                    // 新浪接口返回的 "day" 字段通常包含日期。
-                    
-                    // 重新解析一次以获取日期分组，或者简单起见：
-                    // 如果获取了1000条，通常包含最近几个交易日。
-                    // 我们直接返回最后 240 条非零数据，这通常对应最近一个完整交易日。
-                    // 但为了更准确，我们可以按日期分组。
-                    
-                    // 简易方案：直接返回最后 240 条。如果最后一条是今天的（即使没数据），前面的可能是昨天的。
-                    // 更好的方案：在 fetch_minute_data_from_sina 中保留原始日期信息用于分组。
-                    // 鉴于当前结构体限制，我们采用“去重日期”策略的变体：
-                    // 实际上，新浪分钟K线接口在非交易日返回空或极少数据。
-                    // 如果返回了1000条，最后240条极大概率是最近一个完整交易日的数据。
-                    
-                    let len = history_data.len();
-                    let start = if len > 240 { len - 240 } else { 0 };
-                    let recent_data = history_data[start..].to_vec();
-                    
-                    if !recent_data.is_empty() {
-                         println!("Fetched {} historical minute data points for {} (Last Trading Day)", recent_data.len(), normalized_code);
-                         return Json(json!({
-                            "status": "success",
-                            "data": recent_data
-                        }));
-                    }
+                let len = history_data.len();
+                let start = if len > 240 { len - 240 } else { 0 };
+                let recent_data = history_data[start..].to_vec();
+                
+                // 再次校验：如果取出的数据中，第一条和最后一条日期跨度极大，可能包含多日，
+                // 但前端分时图通常只画一日。这里简化处理，直接返回最近片段。
+                // 若需严格单一日历日，需解析 time 中的日期部分进行截断。
+                // 鉴于需求“略过不显示”，如果最近240条里有数据，就显示。
+                
+                if !recent_data.is_empty() {
+                     println!("Fetched {} historical minute data points for {} (Last Trading Day)", recent_data.len(), normalized_code);
+                     return Json(json!({
+                        "status": "success",
+                        "data": recent_data
+                    }));
+                }
             }
         }
 
         println!("No minute data available for {}", normalized_code);
+        // 返回空数组，前端将显示“暂无数据”
         return Json(json!({"status": "success", "data": []}));
     }
     Json(json!({"status": "error", "msg": "no code provided"}))
+}
+
+// 新增：从东方财富获取K线数据
+async fn fetch_kline_data_from_em(normalized_code: &str, klt: &str, lmt: usize) -> Option<Vec<KLineDataPoint>> {
+    // klt: 101=日K, 102=周K, 103=月K
+    // lmt: 数据条数限制
+    
+    // 转换代码格式为东财格式: 1.600519 (SH), 0.000001 (SZ)
+    let secid = if normalized_code.starts_with("sh") {
+        format!("1.{}", &normalized_code[2..])
+    } else if normalized_code.starts_with("sz") {
+        format!("0.{}", &normalized_code[2..])
+    } else if normalized_code.starts_with("bj") {
+        format!("0.{}", &normalized_code[2..]) 
+    } else {
+        format!("0.{}", normalized_code)
+    };
+
+    // 东方财富 K线接口
+    // fields1: f1(日期), f2(开盘), f3(收盘), f4(最高), f5(最低), f6(成交量), f7(成交额)...
+    // 实际字段映射需参考东财文档，通常:
+    // f51: 日期, f52: 开盘, f53: 收盘, f54: 最高, f55: 最低, f56: 成交量, f57: 成交额, f58: 涨跌幅
+    let url = format!(
+        "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&ut=fa5fd1943c7b386f172d6893dbfba10b&klt={}&fqt=1&beg=0&end=20500101&lmt={}",
+        secid, klt, lmt
+    );
+
+    // 优化：构建更严格的 Client 以模拟浏览器请求，避免连接被关闭
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .default_headers({
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert("Referer", reqwest::header::HeaderValue::from_static("http://quote.eastmoney.com/"));
+            headers.insert("Accept", reqwest::header::HeaderValue::from_static("application/json, text/javascript, */*; q=0.01"));
+            headers.insert("Accept-Language", reqwest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
+            headers.insert("Connection", reqwest::header::HeaderValue::from_static("keep-alive"));
+            headers
+        })
+        .timeout(std::time::Duration::from_secs(10)) // 增加超时设置
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            // 检查状态码
+            if !resp.status().is_success() {
+                eprintln!("Fetch EM KLine HTTP Error: {} for {}", resp.status(), normalized_code);
+                return None;
+            }
+
+            if let Ok(text) = resp.text().await {
+                // 东财接口有时直接返回JSON，有时可能有包装，尝试直接解析
+                // 如果失败，尝试清理可能的 JSONP 包装
+                let clean_text = text.trim();
+                
+                // 调试：如果解析失败，打印前200个字符以便排查
+                if let Err(e) = serde_json::from_str::<Value>(clean_text) {
+                     eprintln!("Parse EM KLine JSON Error: {}, Snippet: {}", e, clean_text.chars().take(200).collect::<String>());
+                     return None;
+                }
+
+                if let Ok(root) = serde_json::from_str::<Value>(clean_text) {
+                    // 检查东财接口返回的状态码
+                    if let Some(rc) = root.get("rc").and_then(|v| v.as_i64()) {
+                        if rc != 0 {
+                            eprintln!("EM API returned error code: {}", rc);
+                            return None;
+                        }
+                    }
+
+                    if let Some(data) = root.get("data") {
+                        if let Some(klines) = data.get("klines") {
+                            if let Some(arr) = klines.as_array() {
+                                let mut result: Vec<KLineDataPoint> = Vec::new();
+                                for item in arr {
+                                    if let Some(line_str) = item.as_str() {
+                                        let parts: Vec<&str> = line_str.split(',').collect();
+                                        // 预期格式: 日期,开盘,收盘,最高,最低,成交量,成交额,换手率...
+                                        // f51, f52, f53, f54, f55, f56, f57
+                                        if parts.len() >= 7 {
+                                            let date = parts[0].to_string();
+                                            let open = parts[1].parse::<f64>().unwrap_or(0.0);
+                                            let close = parts[2].parse::<f64>().unwrap_or(0.0);
+                                            let high = parts[3].parse::<f64>().unwrap_or(0.0);
+                                            let low = parts[4].parse::<f64>().unwrap_or(0.0);
+                                            let volume = parts[5].parse::<f64>().unwrap_or(0.0); // 手
+                                            let amount = parts[6].parse::<f64>().unwrap_or(0.0); // 元
+
+                                            // 过滤无效数据
+                                            if close > 0.0 {
+                                                result.push(KLineDataPoint {
+                                                    date,
+                                                    open,
+                                                    high,
+                                                    low,
+                                                    close,
+                                                    volume,
+                                                    amount,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                                return if result.is_empty() { None } else { Some(result) };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => eprintln!("Fetch EM KLine Network Error: {}", e)
+    }
+    None
+}
+
+// 新增：获取K线数据接口
+async fn get_stock_kline_data(
+    Query(params): Query<HashMap<String, String>>,
+    _state: State<AppState>,
+) -> Json<Value> {
+    if let Some(code) = params.get("code") {
+        let normalized_code = normalize_stock_code(code);
+        let ktype = params.get("type").map(|s| s.as_str()).unwrap_or("kday");
+        
+        // 映射前端类型到东方财富 klt 参数及限制条数
+        // 101=日K, 102=周K, 103=月K
+        // 需求：日K半年(~120天), 周K/月K 1年(~52周, ~12月)
+        let (klt, limit) = match ktype {
+            "kweek" => ("102", 60),  // 周K取60周 > 1年
+            "kmonth" => ("103", 24), // 月K取24月 = 2年 (保证足够数据)
+            _ => ("101", 130),       // 日K取130天 > 半年
+        };
+
+        if let Some(data) = fetch_kline_data_from_em(&normalized_code, klt, limit).await {
+            return Json(json!({
+                "status": "success",
+                "data": data
+            }));
+        }
+    }
+    Json(json!({"status": "error", "msg": "fetch failed or no data"}))
 }
 
 #[axum::debug_handler]

@@ -105,7 +105,7 @@
     <div class="container">
         <!-- 指数看板 -->
         <div class="section-header">
-            <div class="section-title">📊 大盘指数 (可配置)</div>
+            <div class="section-title">📊 大盘指数 </div>
             <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="toggleIndexInput()">+ 添加指数</button>
         </div>
         
@@ -224,7 +224,7 @@
 
             <!-- 资金流向 -->
             <div class="money-flow-container">
-                <div class="mf-title">资金流向 (估算)</div>
+                <div class="mf-title">资金流向</div>
                 <div class="mf-bars" id="mf-bars">
                     <!-- 动态生成 -->
                     <div style="text-align:center; color:#999; padding:10px;">加载中...</div>
@@ -1015,7 +1015,10 @@
                             tooltip: { enabled: false } 
                         },
                         scales: {
-                            x: { display: false }, 
+                            x: { 
+                                display: false, // 修改：隐藏主图X轴，避免重复显示
+                                grid: { display: false }
+                            }, 
                             y: {
                                 position: 'right',
                                 grid: { color: '#f0f0f0' },
@@ -1057,6 +1060,7 @@
                         scales: {
                             x: { 
                                 grid: { display: false },
+                                display: true, // 修改：显示副图X轴（时间），位于图表最底部，更美观
                                 ticks: { maxTicksLimit: 8, maxRotation: 0 }
                             },
                             y1: {
@@ -1090,204 +1094,232 @@
             if (chartKPriceInstance) chartKPriceInstance.destroy();
             if (chartKVolumeInstance) chartKVolumeInstance.destroy();
 
-            // 1. 获取数据 (优先尝试从后端获取，若无则模拟)
-            // 注意：当前后端 main.rs 未实现 /api/stock_kline_data，此处先使用模拟数据生成 OHLCV
-            // 未来可扩展为 fetch(`/api/stock_kline_data?code=${currentDetailSymbol}&type=${type}`)
-           
-            const count = type === 'kday' ? 60 : (type === 'kweek' ? 52 : 24);
-            const labels = [];
-            const kData = []; // { open, high, low, close, volume }
-           
-            // 模拟数据生成
-            let basePrice = currentDetailData ? currentDetailData.price : 10.0;
-            let currentDate = new Date();
-            // 向前推算日期
-            for (let i = count; i > 0; i--) {
-                let d = new Date();
-                d.setDate(currentDate.getDate() - i);
-                // 简单格式化 MM-DD
-                let label = `${d.getMonth() + 1}-${d.getDate()}`;
-                labels.push(label);
+            // 1. 从后端获取真实 K 线数据
+            try {
+                const res = await fetch(`/api/stock_kline_data?code=${currentDetailSymbol}&type=${type}`);
+                const result = await res.json();
 
-                let change = (Math.random() - 0.5) * 0.05; // ±2.5% 波动
-                let open = basePrice;
-                let close = basePrice * (1 + change);
-                let high = Math.max(open, close) * (1 + Math.random() * 0.01);
-                let low = Math.min(open, close) * (1 - Math.random() * 0.01);
-                let volume = Math.floor(Math.random() * 100000) + 10000;
-               
-                kData.push({ open, high, low, close, volume });
-                basePrice = close;
-            }
-
-            // 计算均线
-            const calculateMA = (data, period) => {
-                let ma = [];
-                for (let i = 0; i < data.length; i++) {
-                    if (i < period - 1) {
-                        ma.push(null);
-                        continue;
-                    }
-                    let sum = 0;
-                    for (let j = 0; j < period; j++) {
-                        sum += data[i - j].close;
-                    }
-                    ma.push(sum / period);
+                if (result.status !== 'success' || !result.data || result.data.length === 0) {
+                    console.warn("No K-line data available");
+                    // 绘制提示文字
+                    const drawPlaceholder = (ctx, text) => {
+                        ctx.canvas.width = ctx.canvas.offsetWidth || 300;
+                        ctx.canvas.height = ctx.canvas.offsetHeight || 150;
+                        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+                        ctx.font = "14px PingFang SC";
+                        ctx.fillStyle = "#999";
+                        ctx.textAlign = "center";
+                        ctx.textBaseline = "middle";
+                        ctx.fillText(text, ctx.canvas.width / 2, ctx.canvas.height / 2);
+                    };
+                    drawPlaceholder(ctxPrice, "暂无K线数据");
+                    drawPlaceholder(ctxVol, "");
+                    return;
                 }
-                return ma;
-            };
 
-            const ma5 = calculateMA(kData, 5);
-            const ma10 = calculateMA(kData, 10);
-            const ma30 = calculateMA(kData, 30);
+                const kData = result.data; // Array of { date, open, high, low, close, volume }
+                
+                // 准备标签 (日期)
+                // 根据类型格式化日期显示，避免过于拥挤
+                const labels = kData.map(d => {
+                    // d.date format: YYYY-MM-DD
+                    if (type === 'kmonth') return d.date.substring(0, 7); // YYYY-MM
+                    if (type === 'kweek') return d.date.substring(5); // MM-DD
+                    return d.date.substring(5); // MM-DD for daily
+                });
 
-            // 准备 K 线实体数据 (Floating Bar: [min, max])
-            // 确保数据是数字类型
-            const candleData = kData.map(d => {
-                return [Number(Math.min(d.open, d.close)), Number(Math.max(d.open, d.close))];
-            });
-
-            // 准备颜色：红涨绿跌
-            const candleColors = kData.map(d => {
-                return d.close >= d.open ? '#f43f3e' : '#00b42a';
-            });
-            
-            // 准备成交量颜色
-            const volColors = kData.map(d => {
-                return d.close >= d.open ? 'rgba(244, 63, 62, 0.8)' : 'rgba(0, 180, 42, 0.8)';
-            });
-
-            // 2. 绘制主图 (K线 + 均线)
-            chartKPriceInstance = new Chart(ctxPrice, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: 'K线',
-                            data: candleData,
-                            backgroundColor: candleColors,
-                            barPercentage: 0.6,
-                            categoryPercentage: 0.8,
-                            yAxisID: 'y',
-                            order: 2
-                        },
-                        {
-                            label: 'MA5',
-                            data: ma5,
-                            type: 'line',
-                            borderColor: '#0ea5e9', // Sky Blue
-                            borderWidth: 1.5,
-                            pointRadius: 0,
-                            fill: false,
-                            tension: 0.1,
-                            yAxisID: 'y',
-                            order: 1
-                        },
-                        {
-                            label: 'MA10',
-                            data: ma10,
-                            type: 'line',
-                            borderColor: '#eab308', // Yellow
-                            borderWidth: 1.5,
-                            pointRadius: 0,
-                            fill: false,
-                            tension: 0.1,
-                            yAxisID: 'y',
-                            order: 1
-                        },
-                        {
-                            label: 'MA30',
-                            data: ma30,
-                            type: 'line',
-                            borderColor: '#6366f1', // Indigo
-                            borderWidth: 1.5,
-                            pointRadius: 0,
-                            fill: false,
-                            tension: 0.1,
-                            yAxisID: 'y',
-                            order: 1
+                // 计算均线
+                const calculateMA = (data, period) => {
+                    let ma = [];
+                    for (let i = 0; i < data.length; i++) {
+                        if (i < period - 1) {
+                            ma.push(null);
+                            continue;
                         }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: { mode: 'index', intersect: false },
-                    plugins: {
-                        legend: { display: true, position: 'top', labels: { boxWidth: 10, usePointStyle: true } },
-                        tooltip: {
-                            callbacks: {
-                                label: (context) => {
-                                    if (context.dataset.type === 'line') {
-                                        return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}`;
-                                    } else {
-                                        // K线 Tooltip 增强
-                                        const idx = context.dataIndex;
-                                        const d = kData[idx];
-                                        return [
-                                            `开: ${d.open.toFixed(2)}`,
-                                            `收: ${d.close.toFixed(2)}`,
-                                            `高: ${d.high.toFixed(2)}`,
-                                            `低: ${d.low.toFixed(2)}`
-                                        ];
+                        let sum = 0;
+                        for (let j = 0; j < period; j++) {
+                            sum += data[i - j].close;
+                        }
+                        ma.push(sum / period);
+                    }
+                    return ma;
+                };
+
+                const ma5 = calculateMA(kData, 5);
+                const ma10 = calculateMA(kData, 10);
+                const ma30 = calculateMA(kData, 30);
+
+                // 准备 K 线实体数据 (Floating Bar: [min, max])
+                const candleData = kData.map(d => {
+                    return [Number(Math.min(d.open, d.close)), Number(Math.max(d.open, d.close))];
+                });
+
+                // 准备颜色：红涨绿跌 (A股习惯)
+                const candleColors = kData.map(d => {
+                    return d.close >= d.open ? '#f43f3e' : '#00b42a';
+                });
+                
+                // 准备成交量颜色
+                const volColors = kData.map(d => {
+                    return d.close >= d.open ? 'rgba(244, 63, 62, 0.8)' : 'rgba(0, 180, 42, 0.8)';
+                });
+
+                // 2. 绘制主图 (K线 + 均线)
+                chartKPriceInstance = new Chart(ctxPrice, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'K线',
+                                data: candleData,
+                                backgroundColor: candleColors,
+                                borderColor: candleColors, // 添加边框颜色以防万一
+                                borderWidth: 1,
+                                barPercentage: 0.6,
+                                categoryPercentage: 0.8,
+                                yAxisID: 'y',
+                                order: 2
+                            },
+                            {
+                                label: 'MA5',
+                                data: ma5,
+                                type: 'line',
+                                borderColor: '#0ea5e9', // Sky Blue
+                                borderWidth: 1.5,
+                                pointRadius: 0,
+                                fill: false,
+                                tension: 0.1,
+                                yAxisID: 'y',
+                                order: 1
+                            },
+                            {
+                                label: 'MA10',
+                                data: ma10,
+                                type: 'line',
+                                borderColor: '#eab308', // Yellow
+                                borderWidth: 1.5,
+                                pointRadius: 0,
+                                fill: false,
+                                tension: 0.1,
+                                yAxisID: 'y',
+                                order: 1
+                            },
+                            {
+                                label: 'MA30',
+                                data: ma30,
+                                type: 'line',
+                                borderColor: '#6366f1', // Indigo
+                                borderWidth: 1.5,
+                                pointRadius: 0,
+                                fill: false,
+                                tension: 0.1,
+                                yAxisID: 'y',
+                                order: 1
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: { display: true, position: 'top', labels: { boxWidth: 10, usePointStyle: true } },
+                            tooltip: {
+                                callbacks: {
+                                    label: (context) => {
+                                        if (context.dataset.type === 'line') {
+                                            return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}`;
+                                        } else {
+                                            // K线 Tooltip 增强
+                                            const idx = context.dataIndex;
+                                            const d = kData[idx];
+                                            if (!d) return '';
+                                            const change = ((d.close - d.open) / d.open * 100).toFixed(2);
+                                            const color = d.close >= d.open ? '+' : '';
+                                            return [
+                                                `日期: ${d.date}`,
+                                                `开: ${d.open.toFixed(2)}`,
+                                                `收: ${d.close.toFixed(2)} (${color}${change}%)`,
+                                                `高: ${d.high.toFixed(2)}`,
+                                                `低: ${d.low.toFixed(2)}`
+                                            ];
+                                        }
                                     }
                                 }
                             }
-                        }
-                    },
-                    scales: {
-                        x: { 
-                            grid: { display: false },
-                            ticks: { maxTicksLimit: 8, maxRotation: 0 }
                         },
-                        y: {
-                            position: 'right',
-                            grid: { color: '#f0f0f0' },
-                            ticks: { callback: (val) => val.toFixed(2) },
-                            beginAtZero: false // K线图不需要从0开始
-                        }
-                    }
-                }
-            });
-
-            // 3. 绘制副图 (成交量)
-            chartKVolumeInstance = new Chart(ctxVol, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: '成交量',
-                        data: kData.map(d => Number(d.volume)),
-                        backgroundColor: volColors,
-                        barPercentage: 0.6,
-                        categoryPercentage: 0.8,
-                        yAxisID: 'y1'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: (ctx) => `量: ${ctx.parsed.y.toFixed(0)}`
+                        scales: {
+                            x: { 
+                                display: false, // 隐藏主图X轴
+                                grid: { display: false }
+                            },
+                            y: {
+                                position: 'right',
+                                grid: { color: '#f0f0f0' },
+                                ticks: { callback: (val) => val.toFixed(2) },
+                                beginAtZero: false
                             }
                         }
+                    }
+                });
+
+                // 3. 绘制副图 (成交量)
+                chartKVolumeInstance = new Chart(ctxVol, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: '成交量',
+                            data: kData.map(d => Number(d.volume)),
+                            backgroundColor: volColors,
+                            barPercentage: 0.6,
+                            categoryPercentage: 0.8,
+                            yAxisID: 'y1'
+                        }]
                     },
-                    scales: {
-                        x: { display: false }, // 隐藏X轴，与主图对齐
-                        y1: {
-                            position: 'right',
-                            display: true,
-                            grid: { display: false },
-                            ticks: { display: false }, // 隐藏刻度，保持简洁
-                            beginAtZero: true // 成交量必须从0开始
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: (ctx) => {
+                                        const vol = ctx.parsed.y;
+                                        let unit = '手';
+                                        let val = vol;
+                                        if (vol > 10000) {
+                                            val = (vol / 10000).toFixed(2);
+                                            unit = '万手';
+                                        }
+                                        return `量: ${val}${unit}`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: { 
+                                display: true, // 显示副图X轴
+                                grid: { display: false },
+                                ticks: { maxTicksLimit: 8, maxRotation: 0, autoSkipPadding: 10 }
+                            },
+                            y1: {
+                                position: 'right',
+                                display: true,
+                                grid: { display: false },
+                                ticks: { 
+                                    display: false, // 隐藏刻度数值，保持简洁
+                                },
+                                beginAtZero: true
+                            }
                         }
                     }
-                }
-            });
+                });
+
+            } catch (e) {
+                console.error("Render K chart error:", e);
+            }
         }
 
         function generateSimulatedData(count, basePrice, volatility) {
