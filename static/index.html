@@ -352,6 +352,13 @@
             indicesData.forEach(item => {
                 const div = document.createElement('div');
                 div.className = 'index-card';
+                // 添加点击事件，查看指数详情
+                div.style.cursor = 'pointer';
+                div.onclick = () => {
+                    if (item.data) {
+                        showDetail(item.code, item.data.name);
+                    }
+                };
                 if (!item.data) {
                     // 修复：区分“正在加载”和“已加载但无数据（无效代码）”的状态
                     // 只有当全局数据尚未初始化时，才显示“加载中”
@@ -1096,11 +1103,13 @@
 
             // 1. 从后端获取真实 K 线数据
             try {
+                console.log(`Fetching K-line data for ${currentDetailSymbol} type ${type}`);
                 const res = await fetch(`/api/stock_kline_data?code=${currentDetailSymbol}&type=${type}`);
                 const result = await res.json();
+                console.log("K-line API Result:", result);
 
                 if (result.status !== 'success' || !result.data || result.data.length === 0) {
-                    console.warn("No K-line data available");
+                    console.warn("No K-line data available or API error");
                     // 绘制提示文字
                     const drawPlaceholder = (ctx, text) => {
                         ctx.canvas.width = ctx.canvas.offsetWidth || 300;
@@ -1112,7 +1121,7 @@
                         ctx.textBaseline = "middle";
                         ctx.fillText(text, ctx.canvas.width / 2, ctx.canvas.height / 2);
                     };
-                    drawPlaceholder(ctxPrice, "暂无K线数据");
+                    drawPlaceholder(ctxPrice, "暂无K线数据 (请检查网络连接或股票代码)");
                     drawPlaceholder(ctxVol, "");
                     return;
                 }
@@ -1123,6 +1132,7 @@
                 // 根据类型格式化日期显示，避免过于拥挤
                 const labels = kData.map(d => {
                     // d.date format: YYYY-MM-DD
+                    if (!d.date) return "";
                     if (type === 'kmonth') return d.date.substring(0, 7); // YYYY-MM
                     if (type === 'kweek') return d.date.substring(5); // MM-DD
                     return d.date.substring(5); // MM-DD for daily
@@ -1319,6 +1329,18 @@
 
             } catch (e) {
                 console.error("Render K chart error:", e);
+                const drawPlaceholder = (ctx, text) => {
+                    ctx.canvas.width = ctx.canvas.offsetWidth || 300;
+                    ctx.canvas.height = ctx.canvas.offsetHeight || 150;
+                    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+                    ctx.font = "14px PingFang SC";
+                    ctx.fillStyle = "#999";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(text, ctx.canvas.width / 2, ctx.canvas.height / 2);
+                };
+                drawPlaceholder(ctxPrice, "渲染K线图出错");
+                drawPlaceholder(ctxVol, "");
             }
         }
 
