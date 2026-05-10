@@ -127,8 +127,17 @@
         </div>
         
         <div class="controls">
-            <div style="font-size: 0.9em; color: #666;">提示：支持拖拽排序、右键菜单操作 | 数据每3秒刷新</div>
+            <div style="font-size: 0.9em; color: #666;">提示：支持拖拽排序、右键菜单操作</div>
             <div class="input-group">
+                <div style="display:flex; flex-direction:column; gap:2px;">
+                    <label style="font-size:10px; color:#666;">页面刷新(秒)</label>
+                    <input type="number" id="page-refresh-input" placeholder="如: 3" min="1" value="3" style="width: 60px;">
+                </div>
+                <div style="display:flex; flex-direction:column; gap:2px;">
+                    <label style="font-size:10px; color:#666;">数据获取(秒)</label>
+                    <input type="number" id="data-fetch-input" placeholder="如: 10" min="1" value="10" style="width: 60px;">
+                </div>
+                <button class="btn btn-secondary" onclick="updateConfig()">应用配置</button>
                 <input type="text" id="stock-input" placeholder="代码 (如 600519)" onkeypress="if(event.keyCode==13) addStock()">
                 <button class="btn" onclick="addStock()">添加监控</button>
             </div>
@@ -240,8 +249,11 @@
         let isDataInitialized = false; // 标记数据是否至少尝试加载过一次
         let configIndices = [];
         let configStocks = [];
+        let pageRefreshInterval = 3; // 前端页面刷新间隔
+        let dataFetchInterval = 10;  // 后端数据获取间隔 (仅用于显示和配置提交)
         let sortCol = 'change_percent';
         let sortAsc = false;
+        let isManualSort = true; // 新增：标记是否使用手动拖拽排序
         let chartInstance = null;
         let chartVolumeInstance = null; // 新增：成交量图表实例
         let chartKPriceInstance = null; // 新增：K线价格图表实例
@@ -251,14 +263,22 @@
         let currentChartType = 'day';
         // 新增：存储详情页的实时数据，供图表使用
         let currentDetailData = null;
+        let refreshTimer = null; // 新增：定时器引用
 
         async function init() {
             await refreshAll();
-            setInterval(refreshDataOnly, 3000);
+            startRefreshTimer(); // 启动定时器
             
             document.addEventListener('click', () => {
                 document.getElementById('context-menu').style.display = 'none';
             });
+        }
+
+        // 新增：启动或重启定时器
+        function startRefreshTimer() {
+            if (refreshTimer) clearInterval(refreshTimer);
+            refreshTimer = setInterval(refreshDataOnly, pageRefreshInterval * 1000);
+            console.log(`Page refresh timer set to ${pageRefreshInterval}s`);
         }
 
         async function refreshAll() {
@@ -268,6 +288,8 @@
         }
 
         async function refreshDataOnly() {
+            // 页面刷新时，我们重新获取数据并渲染
+            // 注意：如果后端数据获取间隔较长，这里获取的可能还是旧数据，但UI会强制重绘
             await fetchData();
             render();
         }
@@ -278,6 +300,18 @@
                 const config = await res.json();
                 configIndices = config.indices;
                 configStocks = config.stocks;
+                
+                if (config.page_refresh_interval) {
+                    pageRefreshInterval = config.page_refresh_interval;
+                    const input = document.getElementById('page-refresh-input');
+                    if (input) input.value = pageRefreshInterval;
+                }
+                
+                if (config.data_fetch_interval) {
+                    dataFetchInterval = config.data_fetch_interval;
+                    const input = document.getElementById('data-fetch-input');
+                    if (input) input.value = dataFetchInterval;
+                }
             } catch (e) {
                 console.error("Load config error:", e);
             }
@@ -390,25 +424,29 @@
                 return { code, data };
             });
 
-            // 排序逻辑
-            stocksData.sort((a, b) => {
-                if (sortCol !== 'symbol' && sortCol !== 'name') {
-                    if (!a.data && !b.data) return 0;
-                    if (!a.data) return 1;
-                    if (!b.data) return -1;
-                }
-                let valA, valB;
-                if (sortCol === 'symbol' || sortCol === 'name') {
-                    valA = a.code; valB = b.code;
-                    if (a.data) valA = a.data[sortCol];
-                    if (b.data) valB = b.data[sortCol];
-                } else {
-                    valA = a.data ? a.data[sortCol] : -999999;
-                    valB = b.data ? b.data[sortCol] : -999999;
-                }
-                if (typeof valA === 'string') return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-                return sortAsc ? (valA - valB) : (valB - valA);
-            });
+            // 如果不是手动排序模式，则应用列排序
+            if (!isManualSort) {
+                // 排序逻辑
+                stocksData.sort((a, b) => {
+                    if (sortCol !== 'symbol' && sortCol !== 'name') {
+                        if (!a.data && !b.data) return 0;
+                        if (!a.data) return 1;
+                        if (!b.data) return -1;
+                    }
+                    let valA, valB;
+                    if (sortCol === 'symbol' || sortCol === 'name') {
+                        valA = a.code; valB = b.code;
+                        if (a.data) valA = a.data[sortCol];
+                        if (b.data) valB = b.data[sortCol];
+                    } else {
+                        valA = a.data ? a.data[sortCol] : -999999;
+                        valB = b.data ? b.data[sortCol] : -999999;
+                    }
+                    if (typeof valA === 'string') return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                    return sortAsc ? (valA - valB) : (valB - valA);
+                });
+            }
+            // 如果是 isManualSort === true，则保持 configStocks 的原始顺序（即拖拽顺序）
 
             if (stocksData.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:20px;">暂无自选股，请添加</td></tr>';
@@ -471,7 +509,7 @@
         function handleDragStart(e) {
             dragSrcEl = this;
             e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/html', this.innerHTML);
+            e.dataTransfer.setData('text/plain', this.dataset.code); // 传输代码而非HTML
             this.classList.add('dragging');
         }
 
@@ -485,44 +523,53 @@
         function handleDragEnd(e) {
             this.classList.remove('dragging');
             document.querySelectorAll('tr').forEach(col => col.classList.remove('drag-over'));
+            dragSrcEl = null;
         }
 
-        function handleDrop(e) {
+        async function handleDrop(e) {
             if (e.stopPropagation) e.stopPropagation();
-            if (dragSrcEl !== this) {
-                // 交换 DOM 位置
-                const tbody = document.getElementById('stock-table-body');
-                const rows = Array.from(tbody.querySelectorAll('tr'));
-                const srcIndex = rows.indexOf(dragSrcEl);
-                const targetIndex = rows.indexOf(this);
-
-                if (srcIndex < targetIndex) {
-                    this.after(dragSrcEl);
-                } else {
-                    this.before(dragSrcEl);
-                }
-
-                // 更新本地配置顺序并保存到后端
-                updateStockOrderFromDom();
-            }
-            return false;
-        }
-
-        async function updateStockOrderFromDom() {
-            const tbody = document.getElementById('stock-table-body');
-            const newOrder = Array.from(tbody.querySelectorAll('tr')).map(tr => tr.dataset.code);
-            configStocks = newOrder; // 更新本地内存
             
-            // 发送到后端持久化
-            try {
-                await fetch('/api/reorder_stocks', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ stocks: newOrder })
-                });
-            } catch (e) {
-                console.error("Failed to save order", e);
+            const targetRow = this;
+            if (!dragSrcEl || dragSrcEl === targetRow) return;
+
+            const srcCode = dragSrcEl.dataset.code;
+            const targetCode = targetRow.dataset.code;
+
+            if (!srcCode || !targetCode) return;
+
+            // 1. 在内存数组中重新排序
+            const srcIndex = configStocks.indexOf(srcCode);
+            const targetIndex = configStocks.indexOf(targetCode);
+
+            if (srcIndex > -1 && targetIndex > -1) {
+                // 移除源元素
+                configStocks.splice(srcIndex, 1);
+                // 计算新的插入位置
+                // 如果源在目标之前，移除后目标索引减1
+                const newIndex = srcIndex < targetIndex ? targetIndex - 1 : targetIndex;
+                // 插入到新位置
+                configStocks.splice(newIndex, 0, srcCode);
+
+                // 2. 立即重绘表格以反映新顺序 (保持 isManualSort = true)
+                isManualSort = true; 
+                renderTable();
+
+                // 3. 保存到后端
+                try {
+                    await fetch('/api/reorder_stocks', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ stocks: configStocks })
+                    });
+                    console.log("Stock order saved");
+                } catch (err) {
+                    console.error("Failed to save stock order", err);
+                    // 可选：如果保存失败，重新加载配置以恢复
+                    // loadConfig().then(render);
+                }
             }
+            
+            return false;
         }
 
         // --- 右键菜单逻辑 ---
@@ -571,6 +618,7 @@
 
         // --- 其他功能 ---
         function sortTable(col) {
+            isManualSort = false; // 点击列排序时，切换为非手动排序模式
             if (sortCol === col) sortAsc = !sortAsc;
             else { sortCol = col; sortAsc = false; }
             renderTable();
@@ -1273,6 +1321,47 @@
 
         function closeAi() {
             document.getElementById('ai-view').style.display = 'none';
+        }
+
+        // 新增：更新配置
+        async function updateConfig() {
+            const pageInput = document.getElementById('page-refresh-input');
+            const dataInput = document.getElementById('data-fetch-input');
+            
+            const pageVal = parseInt(pageInput.value);
+            const dataVal = parseInt(dataInput.value);
+
+            if (!pageVal || pageVal < 1) {
+                alert("页面刷新间隔必须大于等于1秒");
+                return;
+            }
+            if (!dataVal || dataVal < 1) {
+                alert("数据获取间隔必须大于等于1秒");
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/update_config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        page_refresh_interval: pageVal,
+                        data_fetch_interval: dataVal 
+                    })
+                });
+                const result = await res.json();
+                if (result.status === 'success') {
+                    pageRefreshInterval = pageVal;
+                    dataFetchInterval = dataVal;
+                    startRefreshTimer(); // 重启前端定时器
+                    alert("配置已更新");
+                } else {
+                    alert("设置失败: " + result.msg);
+                }
+            } catch (e) {
+                console.error("Update config error:", e);
+                alert("网络错误");
+            }
         }
 
         init();

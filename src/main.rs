@@ -68,6 +68,7 @@ struct AppState {
     stock_list: Arc<RwLock<Vec<String>>>,
     market_data: Arc<RwLock<Vec<StockInfo>>>,
     data_refresh_notify: Arc<Notify>,
+    refresh_interval: Arc<RwLock<u64>>, // 新增：刷新间隔
 }
 
 static RE_SINA_DATA: LazyLock<Regex> = LazyLock::new(|| {
@@ -79,6 +80,18 @@ static RE_SINA_DATA: LazyLock<Regex> = LazyLock::new(|| {
 struct AppConfig {
     indices: Vec<String>,
     stocks: Vec<String>,
+    #[serde(default = "default_data_fetch_interval")]
+    data_fetch_interval: u64, // 后端获取数据的间隔
+    #[serde(default = "default_page_refresh_interval")]
+    page_refresh_interval: u64, // 前端页面刷新的间隔
+}
+
+fn default_data_fetch_interval() -> u64 {
+    10
+}
+
+fn default_page_refresh_interval() -> u64 {
+    3
 }
 
 // 新增：加载配置的辅助函数
@@ -86,7 +99,14 @@ fn load_config_from_file() -> Option<AppConfig> {
     let config_path = Path::new("data/config.json");
     if config_path.exists() {
         if let Ok(content) = fs::read_to_string(config_path) {
-            if let Ok(config) = serde_json::from_str::<AppConfig>(&content) {
+            if let Ok(mut config) = serde_json::from_str::<AppConfig>(&content) {
+                // 兼容旧配置
+                if config.data_fetch_interval == 0 {
+                    config.data_fetch_interval = 10;
+                }
+                if config.page_refresh_interval == 0 {
+                    config.page_refresh_interval = 3;
+                }
                 println!("✅ Loaded config from data/config.json");
                 return Some(config);
             } else {
@@ -98,7 +118,7 @@ fn load_config_from_file() -> Option<AppConfig> {
 }
 
 // 新增：保存配置的辅助函数
-fn save_config_to_file(indices: &[String], stocks: &[String]) {
+fn save_config_to_file(indices: &[String], stocks: &[String], data_fetch_interval: u64, page_refresh_interval: u64) {
     // 确保 data 目录存在
     let data_dir = Path::new("data");
     if !data_dir.exists() {
@@ -111,6 +131,8 @@ fn save_config_to_file(indices: &[String], stocks: &[String]) {
     let config = AppConfig {
         indices: indices.to_vec(),
         stocks: stocks.to_vec(),
+        data_fetch_interval,
+        page_refresh_interval,
     };
 
     let config_path = Path::new("data/config.json");
@@ -147,11 +169,14 @@ async fn main() {
         "sz002594".to_string(),
     ];
 
+    let default_data_interval = 10;
+    let default_page_interval = 3;
+
     // 尝试从文件加载配置，否则使用默认值
-    let (initial_indices, initial_stocks) = if let Some(saved_config) = load_config_from_file() {
-        (saved_config.indices, saved_config.stocks)
+    let (initial_indices, initial_stocks, initial_data_interval, _initial_page_interval) = if let Some(saved_config) = load_config_from_file() {
+        (saved_config.indices, saved_config.stocks, saved_config.data_fetch_interval, saved_config.page_refresh_interval)
     } else {
-        (default_indices, default_stocks)
+        (default_indices, default_stocks, default_data_interval, default_page_interval)
     };
 
     let notify = Arc::new(Notify::new());
@@ -161,6 +186,7 @@ async fn main() {
         stock_list: Arc::new(RwLock::new(initial_stocks)),
         market_data: Arc::new(RwLock::new(vec![])),
         data_refresh_notify: notify.clone(),
+        refresh_interval: Arc::new(RwLock::new(initial_data_interval)), // 初始化刷新间隔
     };
 
     let state_clone = state.clone();
@@ -171,6 +197,7 @@ async fn main() {
     let app = Router::new()
         .route("/api/market", get(get_market_data))
         .route("/api/config", get(get_config))
+        .route("/api/update_config", post(update_config)) // 新增路由
         .route("/api/add_stock", get(add_stock))
         .route("/api/remove_stock", post(remove_stock)) 
         .route("/api/reorder_stocks", post(reorder_stocks)) 
@@ -191,10 +218,64 @@ async fn main() {
 async fn get_config(State(state): State<AppState>) -> Json<Value> {
     let indices = state.index_list.read().await.clone();
     let stocks = state.stock_list.read().await.clone();
+    let data_interval = state.refresh_interval.read().await.clone();
+    
+    // 从文件读取最新的 page_refresh_interval，或者使用默认值
+    // 为了简单，这里假设 page_refresh_interval 不常变，或者我们可以扩展 AppState 来存储它
+    // 鉴于 AppState 修改较大，这里我们保存在文件中。前端加载配置后自行设置定时器。
+    
+    // 由于 AppState 定义已固定，为了不大幅重构，我们在这里做一个妥协：
+    // 重新读取配置文件获取 page_refresh_interval，因为它是静态配置
+    let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
+
     Json(json!({
         "indices": indices,
-        "stocks": stocks
+        "stocks": stocks,
+        "data_fetch_interval": data_interval,
+        "page_refresh_interval": page_interval
     }))
+}
+
+// 新增：更新配置接口
+async fn update_config(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    let mut updated_data_interval = state.refresh_interval.read().await.clone();
+    let mut updated_page_interval = 3; // 默认值
+    
+    // 尝试从当前配置文件中获取旧的 page_interval，以防本次只更新 data_interval
+    if let Some(cfg) = load_config_from_file() {
+        updated_page_interval = cfg.page_refresh_interval;
+    }
+
+    if let Some(val) = payload.get("data_fetch_interval").and_then(|v| v.as_u64()) {
+        if val < 1 {
+            return Json(json!({"status": "error", "msg": "data_fetch_interval must be >= 1"}));
+        }
+        updated_data_interval = val;
+    }
+
+    if let Some(val) = payload.get("page_refresh_interval").and_then(|v| v.as_u64()) {
+        if val < 1 {
+            return Json(json!({"status": "error", "msg": "page_refresh_interval must be >= 1"}));
+        }
+        updated_page_interval = val;
+    }
+    
+    // 更新内存中的状态 (仅 data_fetch_interval 需要内存状态用于后端循环)
+    {
+        let mut current_interval = state.refresh_interval.write().await;
+        *current_interval = updated_data_interval;
+    }
+    
+    // 持久化保存
+    let indices = state.index_list.read().await.clone();
+    let stocks = state.stock_list.read().await.clone();
+    save_config_to_file(&indices, &stocks, updated_data_interval, updated_page_interval);
+    
+    println!("✅ Config updated: data_fetch={}s, page_refresh={}s", updated_data_interval, updated_page_interval);
+    return Json(json!({"status": "success"}));
 }
 
 async fn get_market_data(State(state): State<AppState>) -> Json<Vec<StockInfo>> {
@@ -400,8 +481,11 @@ async fn add_stock(
             // 保存配置
             let indices = state.index_list.read().await.clone();
             let stocks = list.clone();
+            let data_interval = state.refresh_interval.read().await.clone();
+            // 获取当前的 page_interval
+            let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
             drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks);
+            save_config_to_file(&indices, &stocks, data_interval, page_interval);
             
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "added", "code": normalized_code}));
@@ -430,8 +514,10 @@ async fn remove_stock(
             // 保存配置
             let indices = state.index_list.read().await.clone();
             let stocks = list.clone();
+            let data_interval = state.refresh_interval.read().await.clone();
+            let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
             drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks);
+            save_config_to_file(&indices, &stocks, data_interval, page_interval);
             
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "removed"}));
@@ -452,18 +538,24 @@ async fn reorder_stocks(
             .filter_map(|v| v.as_str().map(|s| normalize_stock_code(s)))
             .collect();
         
+        // 验证：确保新列表中的股票都是合法的且没有重复（可选，但建议）
+        // 这里直接更新
         *list = new_codes.clone();
-        println!("✅ Backend: Stocks reordered");
+        println!("✅ Backend: Stocks reordered to {:?}", new_codes);
         
         // 保存配置
         let indices = state.index_list.read().await.clone();
+        let data_interval = state.refresh_interval.read().await.clone();
+        let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
         drop(list); // 释放写锁
-        save_config_to_file(&indices, &new_codes);
+        
+        // 确保写入文件
+        save_config_to_file(&indices, &new_codes, data_interval, page_interval);
         
         state.data_refresh_notify.notify_one();
         return Json(json!({"status": "success"}));
     }
-    Json(json!({"status": "error"}))
+    Json(json!({"status": "error", "msg": "invalid payload"}))
 }
 
 async fn get_ai_analysis(
@@ -500,8 +592,10 @@ async fn add_index(
             // 保存配置
             let stocks = state.stock_list.read().await.clone();
             let indices = list.clone();
+            let data_interval = state.refresh_interval.read().await.clone();
+            let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
             drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks);
+            save_config_to_file(&indices, &stocks, data_interval, page_interval);
             
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "added"}));
@@ -530,9 +624,15 @@ async fn fetch_realtime_data(state: AppState, notify: Arc<Notify>) {
         .unwrap();
 
     loop {
+        // 动态获取刷新间隔 (数据获取间隔)
+        let interval_secs = {
+            let interval = state.refresh_interval.read().await;
+            *interval
+        };
+        
         tokio::select! {
             _ = notify.notified() => {}
-            _ = tokio::time::sleep(tokio::time::Duration::from_secs(3)) => {}
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)) => {}
         }
         
         let indices = state.index_list.read().await.clone();
@@ -849,8 +949,10 @@ async fn remove_index(
             // 保存配置
             let stocks = state.stock_list.read().await.clone();
             let indices = list.clone();
+            let data_interval = state.refresh_interval.read().await.clone();
+            let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
             drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks);
+            save_config_to_file(&indices, &stocks, data_interval, page_interval);
             
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "removed"}));
