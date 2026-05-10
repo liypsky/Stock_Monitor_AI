@@ -4,11 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>A股实时监控中心</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- 新增：引入 Hammer.js 用于手势识别 (chartjs-plugin-zoom 依赖) -->
+    <!-- 1. Luxon (时间处理核心) -->
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.3/build/global/luxon.min.js"></script>
+    <!-- 2. Chart.js (核心库) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <!-- 3. Chart.js Adapter for Luxon (必须紧跟 Chart.js 之后，用于解析时间轴) -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.0/dist/chartjs-adapter-luxon.min.js"></script>
+    <!-- 4. Hammer.js (手势支持，Zoom插件依赖) -->
     <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
-    <!-- 新增：引入 Chart.js Zoom 插件 -->
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <!-- 5. Zoom Plugin (缩放插件) -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@1.2.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <!-- 6. Financial Plugin (K线图插件，最后加载，因为它依赖前面的所有库) -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.0/dist/chartjs-chart-financial.min.js"></script>
+    
     <style>
         :root { --primary: #d81e06; --bg: #f5f5f5; --card: #fff; --up: #f43f3e; --down: #00b42a; }
         body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #333; user-select: none; }
@@ -204,6 +212,8 @@
                 <div class="chart-tab" onclick="switchChart('kday')">日K</div>
                 <div class="chart-tab" onclick="switchChart('kweek')">周K</div>
                 <div class="chart-tab" onclick="switchChart('kmonth')">月K</div>
+                <!-- 新增：重置缩放按钮，仅在K线图显示时有效 -->
+                <button id="btn-reset-zoom" class="btn btn-secondary btn-small" style="margin-left: auto; display: none;" onclick="resetKLineZoom()">重置缩放</button>
             </div>
             
             <!-- 修改：分时图改为双Canvas布局 -->
@@ -270,6 +280,8 @@
         let refreshTimer = null; // 新增：定时器引用
         // 新增：前端K线数据缓存 { "symbol_type": data }
         let kLineCache = {}; 
+        // 修改：K线图默认显示数量，减少以聚焦近期走势
+        const KLINE_DEFAULT_VIEW_COUNT = 40; 
 
         async function init() {
             await refreshAll();
@@ -278,6 +290,76 @@
             document.addEventListener('click', () => {
                 document.getElementById('context-menu').style.display = 'none';
             });
+
+            // 新增：检查关键库是否加载成功
+            checkLibraries();
+            
+            // 新增：尝试显式注册 Financial 插件，防止自动注册失败
+            if (typeof Chart !== 'undefined' && typeof Chart.register === 'function') {
+                // chartjs-chart-financial 通常会在全局暴露一个对象或直接注册
+                // 如果 CDN 加载的是 UMD 格式，它可能已经自动注册。
+                // 如果没有，我们需要找到导出的控制器。
+                // 对于 0.2.0 版本，它通常会自动注册。如果未注册，这里可以尝试手动查找。
+                console.log("Checking Financial Plugin registration...");
+                
+                // 尝试显式注册
+                if (window.ChartFinancial) {
+                    try {
+                        Chart.register(window.ChartFinancial);
+                        console.log("Manually registered ChartFinancial plugin.");
+                    } catch (e) {
+                        console.warn("Failed to manually register ChartFinancial:", e);
+                    }
+                } else if (window.FinancialChart) {
+                     try {
+                        Chart.register(window.FinancialChart);
+                        console.log("Manually registered FinancialChart plugin.");
+                    } catch (e) {
+                        console.warn("Failed to manually register FinancialChart:", e);
+                    }
+                }
+            }
+        }
+
+        // 新增：检查依赖库
+        function checkLibraries() {
+            if (typeof Chart === 'undefined') {
+                console.error("Chart.js failed to load!");
+                alert("图表库加载失败，请检查网络连接或刷新页面。");
+                return;
+            }
+            if (typeof luxon === 'undefined') {
+                console.error("Luxon failed to load!");
+                alert("时间处理库 Luxon 加载失败，K线图将无法显示。");
+            } else {
+                console.log("Luxon loaded successfully. Version:", luxon.DateTime.now().toISO());
+            }
+            
+            // 检查 adapter 是否被 Chart.js 识别
+            // Chart.js 3.x 通常自动检测 adapter，但我们可以检查 _adapters 属性
+            if (Chart._adapters && Chart._adapters._date) {
+                 console.log("Date adapter detected:", Chart._adapters._date.id);
+            } else {
+                 console.warn("No date adapter detected in Chart._adapters. Attempting manual configuration.");
+                 // 尝试手动设置全局默认适配器
+                 Chart.defaults.plugins.tooltip.callbacks.label = function() { return ''; }; // Dummy to trigger init if needed
+            }
+
+            // 检查 financial plugin 是否注册
+            const hasCandlestick = Chart.registry.getController('candlestick');
+            if (!hasCandlestick) {
+                console.warn("chartjs-chart-financial plugin might not be loaded correctly. Candlestick chart may fail.");
+                // 尝试诊断：检查全局变量
+                console.log("Global objects:", Object.keys(window).filter(k => k.includes('financial') || k.includes('Chart')));
+                
+                // 尝试再次注册
+                if (window.ChartFinancial) {
+                    Chart.register(window.ChartFinancial);
+                    console.log("Retry registering ChartFinancial in checkLibraries.");
+                }
+            } else {
+                console.log("Chart.js Financial Plugin loaded successfully.");
+            }
         }
 
         // 新增：启动或重启定时器
@@ -861,16 +943,29 @@
             // 切换容器显示
             const dayContainer = document.getElementById('chart-container-day');
             const kContainer = document.getElementById('chart-container-k');
+            const resetBtn = document.getElementById('btn-reset-zoom');
             
             if (type === 'day') {
                 dayContainer.style.display = 'block';
                 kContainer.style.display = 'none';
+                if (resetBtn) resetBtn.style.display = 'none';
             } else {
                 dayContainer.style.display = 'none';
                 kContainer.style.display = 'block';
+                if (resetBtn) resetBtn.style.display = 'block';
             }
             
             renderChart(type);
+        }
+
+        // 新增：重置K线图缩放
+        function resetKLineZoom() {
+            if (chartKPriceInstance) {
+                chartKPriceInstance.resetZoom();
+            }
+            if (chartKVolumeInstance) {
+                chartKVolumeInstance.resetZoom();
+            }
         }
 
         async function renderChart(type) {
@@ -894,8 +989,19 @@
             const ctxPrice = canvasPrice.getContext('2d');
             const ctxVol = canvasVol.getContext('2d');
             
-            if (chartInstance) chartInstance.destroy();
-            if (chartVolumeInstance) chartVolumeInstance.destroy();
+            // 修改：强制销毁所有绑定在 Canvas 上的旧实例，防止 "Canvas is already in use"
+            const existingPriceChart = Chart.getChart(canvasPrice);
+            if (existingPriceChart) {
+                existingPriceChart.destroy();
+            }
+            const existingVolChart = Chart.getChart(canvasVol);
+            if (existingVolChart) {
+                existingVolChart.destroy();
+            }
+            
+            // 清空全局引用
+            chartInstance = null;
+            chartVolumeInstance = null;
 
             // 获取昨收价作为基准，如果不存在则使用当前价
             const basePrice = currentDetailData && currentDetailData.pre_close > 0 ? currentDetailData.pre_close : (currentDetailData ? currentDetailData.price : 10.0);
@@ -1029,7 +1135,34 @@
                         interaction: { mode: 'index', intersect: false },
                         plugins: {
                             legend: { display: false },
-                            tooltip: { enabled: false } 
+                            tooltip: { enabled: false },
+                            zoom: {
+                                zoom: {
+                                    wheel: { enabled: true },
+                                    pinch: { enabled: true },
+                                    mode: 'x',
+                                    onZoom: ({ chart }) => {
+                                        if (chartVolumeInstance) {
+                                            const xScale = chart.scales.x;
+                                            chartVolumeInstance.zoomScale('x', xScale.min, xScale.max, 'default');
+                                        }
+                                    },
+                                },
+                                pan: {
+                                    enabled: true,
+                                    mode: 'x',
+                                    onPan: ({ chart }) => {
+                                        // 修复：价格图平移时，同步平移成交量图
+                                        if (chartVolumeInstance) {
+                                            const xScale = chart.scales.x;
+                                            chartVolumeInstance.zoomScale('x', xScale.min, xScale.max, 'default');
+                                        }
+                                    },
+                                },
+                                limits: {
+                                    x: { min: 'original', max: 'original' }
+                                }
+                            }
                         },
                         scales: {
                             x: { 
@@ -1072,6 +1205,34 @@
                                 callbacks: {
                                     label: (ctx) => `量: ${ctx.parsed.y.toFixed(0)}`
                                 }
+                            },
+                            zoom: {
+                                zoom: {
+                                    wheel: { enabled: true },
+                                    pinch: { enabled: true },
+                                    mode: 'x',
+                                    onZoom: ({ chart }) => {
+                                        // 修复：成交量图缩放时，同步缩放价格图
+                                        if (chartInstance) {
+                                            const xScale = chart.scales.x;
+                                            chartInstance.zoomScale('x', xScale.min, xScale.max, 'default');
+                                        }
+                                    },
+                                },
+                                pan: {
+                                    enabled: true,
+                                    mode: 'x',
+                                    onPan: ({ chart }) => {
+                                        // 修复：成交量图平移时，同步平移价格图
+                                        if (chartInstance) {
+                                            const xScale = chart.scales.x;
+                                            chartInstance.zoomScale('x', xScale.min, xScale.max, 'default');
+                                        }
+                                    },
+                                },
+                                limits: {
+                                    x: { min: 'original', max: 'original' }
+                                }
                             }
                         },
                         scales: {
@@ -1096,208 +1257,473 @@
             }
         }
 
-        // --- K线图模块 (增强版：缩放 + 缓存 + 默认范围) ---
+        // --- K线图模块 (重构版：使用专业 Candlestick 插件 + 优化交互) ---
         async function renderKChart(type) {
+            console.log(`[KChart] Starting render for type: ${type}, symbol: ${currentDetailSymbol}`);
+            
             const canvasPrice = document.getElementById('chart-k-price');
             const canvasVol = document.getElementById('chart-k-volume');
 
-            if (!canvasPrice || !canvasVol) return;
+            if (!canvasPrice || !canvasVol) {
+                console.error("[KChart] Canvas elements not found");
+                return;
+            }
+
+            // 修复：强制确保 Canvas 父容器有高度，防止 Chart.js 渲染为 0 高度
+            const parentPrice = canvasPrice.parentElement;
+            const parentVol = canvasVol.parentElement;
+            
+            // 如果父容器高度为 0 或未定义，赋予默认高度
+            if (parentPrice && (!parentPrice.offsetHeight || parentPrice.offsetHeight === 0)) {
+                parentPrice.style.height = '300px';
+            }
+            if (parentVol && (!parentVol.offsetHeight || parentVol.offsetHeight === 0)) {
+                parentVol.style.height = '100px';
+            }
+
+            // 修复：在创建图表前，再次检查 Canvas 尺寸，必要时手动设置
+            if (canvasPrice.width === 0 || canvasPrice.height === 0) {
+                canvasPrice.width = canvasPrice.offsetWidth || 800;
+                canvasPrice.height = canvasPrice.offsetHeight || 300;
+            }
+            if (canvasVol.width === 0 || canvasVol.height === 0) {
+                canvasVol.width = canvasVol.offsetWidth || 800;
+                canvasVol.height = canvasVol.offsetHeight || 100;
+            }
 
             const ctxPrice = canvasPrice.getContext('2d');
             const ctxVol = canvasVol.getContext('2d');
 
-            // 销毁旧实例 - 修复：使用全局变量
-            if (chartKPriceInstance) chartKPriceInstance.destroy();
-            if (chartKVolumeInstance) chartKVolumeInstance.destroy();
+            // 修改：彻底销毁旧实例，防止 "Canvas is already in use" 错误
+            // 1. 使用 Chart.getChart 强制查找并销毁绑定在 Canvas 上的任何实例
+            const existingChartPrice = Chart.getChart(canvasPrice);
+            if (existingChartPrice) {
+                console.warn("[KChart] Found existing chart on price canvas, destroying it.");
+                existingChartPrice.destroy();
+            }
+            
+            const existingChartVol = Chart.getChart(canvasVol);
+            if (existingChartVol) {
+                console.warn("[KChart] Found existing chart on volume canvas, destroying it.");
+                existingChartVol.destroy();
+            }
 
-            const symbol = currentDetailSymbol; // 修复：使用全局变量
+            // 2. 清空全局变量引用
+            chartKPriceInstance = null;
+            chartKVolumeInstance = null;
+
+            const symbol = currentDetailSymbol;
             const cacheKey = `${symbol}_${type}`;
 
-            // 1. 检查前端缓存 - 修复：使用全局变量 kLineCache
+            // 1. 检查前端缓存
             let kData = kLineCache[cacheKey];
 
             if (!kData) {
                 // 2. 缓存未命中，请求后端
                 try {
-                    console.log(`Fetching K-line data for ${symbol} type ${type}`);
+                    console.log(`[KChart] Fetching K-line data for ${symbol} type ${type}`);
                     const res = await fetch(`/api/stock_kline_data?code=${symbol}&type=${type}`);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     const result = await res.json();
                     
                     if (result.status === 'success' && result.data) {
                         kData = result.data;
-                        kLineCache[cacheKey] = kData; // 修复：存入全局缓存
+                        kLineCache[cacheKey] = kData;
+                        console.log(`[KChart] Data fetched, count: ${kData.length}`);
                     } else {
-                        throw new Error("No data");
+                        throw new Error("No data in response");
                     }
                 } catch (e) {
-                    console.error("Fetch K-line error:", e);
-                    drawPlaceholder(ctxPrice, "暂无K线数据");
+                    console.error("[KChart] Fetch K-line error:", e);
+                    drawPlaceholder(ctxPrice, "暂无K线数据 (检查网络或后端)");
                     drawPlaceholder(ctxVol, "");
                     return;
                 }
             }
 
             if (!kData || kData.length === 0) {
+                console.warn("[KChart] No data available");
                 drawPlaceholder(ctxPrice, "暂无数据");
                 drawPlaceholder(ctxVol, "");
                 return;
             }
 
-            // 3. 数据处理
-            // 默认显示最近 5 个单位 (5日/5周/5月)
-            const defaultViewCount = 5;
-            const startIndex = Math.max(0, kData.length - defaultViewCount);
-            const initialMinIndex = startIndex - 2; // 稍微多留一点左边距
-            const initialMaxIndex = kData.length - 1;
+            // 3. 数据处理：转换为 Financial Plugin 需要的格式
+            if (typeof luxon === 'undefined') {
+                console.error("[KChart] Luxon is not defined!");
+                drawPlaceholder(ctxPrice, "时间库加载失败");
+                return;
+            }
+            const DateTime = luxon.DateTime;
+            
+            try {
+                // 修复：增强日期解析容错性，尝试多种格式
+                const financialData = [];
+                const validVolumes = [];
 
-            const labels = kData.map(d => {
-                if (!d.date) return "";
-                if (type === 'kmonth') return d.date.substring(0, 7);
-                return d.date.substring(5);
-            });
+                for (let i = 0; i < kData.length; i++) {
+                    const d = kData[i];
+                    let dateObj = null;
 
-            const candleData = kData.map(d => [Number(Math.min(d.open, d.close)), Number(Math.max(d.open, d.close))]);
-            const candleColors = kData.map(d => d.close >= d.open ? '#f43f3e' : '#00b42a');
-            const volColors = kData.map(d => d.close >= d.open ? 'rgba(244, 63, 62, 0.8)' : 'rgba(0, 180, 42, 0.8)');
-            const volumes = kData.map(d => Number(d.volume));
+                    // 尝试解析日期：支持 'yyyy-MM-dd', 'yyyy/MM/dd', 或带时间的格式
+                    if (d.date) {
+                        // 先尝试标准格式
+                        dateObj = DateTime.fromFormat(d.date, 'yyyy-MM-dd', { zone: 'utc' });
+                        // 如果无效，尝试其他常见格式
+                        if (!dateObj.isValid) {
+                            dateObj = DateTime.fromISO(d.date, { zone: 'utc' });
+                        }
+                        if (!dateObj.isValid) {
+                            dateObj = DateTime.fromFormat(d.date, 'yyyy/MM/dd', { zone: 'utc' });
+                        }
+                    }
 
-            // 计算均线
-            const calculateMA = (data, period) => {
-                let ma = [];
-                for (let i = 0; i < data.length; i++) {
-                    if (i < period - 1) { ma.push(null); continue; }
-                    let sum = 0;
-                    for (let j = 0; j < period; j++) sum += data[i - j].close;
-                    ma.push(sum / period);
+                    // 如果仍然无效，跳过该条数据
+                    if (!dateObj || !dateObj.isValid) {
+                        console.warn(`[KChart] Skipping invalid date: ${d.date}`);
+                        continue;
+                    }
+
+                    // 设置为中午12点，避免时区导致的日期偏移问题
+                    dateObj = dateObj.set({ hour: 12, minute: 0, second: 0, millisecond: 0 });
+
+                    const open = Number(d.open);
+                    const high = Number(d.high);
+                    const low = Number(d.low);
+                    const close = Number(d.close);
+                    const volume = Number(d.volume);
+
+                    // 基本数据校验
+                    if (isNaN(open) || isNaN(high) || isNaN(low) || isNaN(close)) {
+                        console.warn(`[KChart] Skipping invalid price data:`, d);
+                        continue;
+                    }
+
+                    const timestamp = dateObj.toMillis();
+
+                    financialData.push({
+                        x: timestamp,
+                        o: open,
+                        h: high,
+                        l: low,
+                        c: close
+                    });
+
+                    validVolumes.push({
+                        x: timestamp,
+                        y: volume,
+                        color: close >= open ? 'rgba(244, 63, 62, 0.8)' : 'rgba(0, 180, 42, 0.8)'
+                    });
                 }
-                return ma;
-            };
 
-            const ma5 = calculateMA(kData, 5);
-            const ma10 = calculateMA(kData, 10);
-            const ma30 = calculateMA(kData, 30);
-
-            // 4. 配置缩放插件
-            const zoomOptions = {
-                zoom: {
-                    wheel: { enabled: true },
-                    pinch: { enabled: true },
-                    mode: 'x',
-                },
-                pan: {
-                    enabled: true,
-                    mode: 'x',
-                },
-                limits: {
-                    x: { min: 'original', max: 'original' }
+                if (financialData.length === 0) {
+                    throw new Error("All data points were invalid after parsing");
                 }
-            };
 
-            // 5. 渲染主图 - 修复：赋值给全局变量
-            chartKPriceInstance = new Chart(ctxPrice, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: 'K线',
-                            data: candleData,
-                            backgroundColor: candleColors,
-                            borderColor: candleColors,
-                            borderWidth: 1,
-                            barPercentage: 0.6,
-                            categoryPercentage: 0.8,
-                            yAxisID: 'y',
-                            order: 2
+                console.log(`[KChart] Processed ${financialData.length} valid data points.`);
+
+                // 计算均线 (MA)
+                const calculateMA = (data, period) => {
+                    let ma = [];
+                    for (let i = 0; i < data.length; i++) {
+                        if (i < period - 1) { 
+                            ma.push({ x: data[i].x, y: null }); 
+                            continue; 
+                        }
+                        let sum = 0;
+                        for (let j = 0; j < period; j++) sum += data[i - j].c;
+                        ma.push({ x: data[i].x, y: sum / period });
+                    }
+                    return ma;
+                };
+
+                const ma5 = calculateMA(financialData, 5);
+                const ma10 = calculateMA(financialData, 10);
+                const ma30 = calculateMA(financialData, 30);
+
+                // 4. 确定默认显示范围
+                const totalPoints = financialData.length;
+                const viewCount = Math.min(KLINE_DEFAULT_VIEW_COUNT, totalPoints);
+                const startIndex = totalPoints - viewCount;
+                
+                // 获取默认范围的 min/max 时间戳
+                const defaultMinTime = financialData[startIndex].x;
+                const defaultMaxTime = financialData[totalPoints - 1].x;
+
+                // 5. 配置缩放插件 - 优化手感
+                let isSyncing = false;
+                const syncZoom = (sourceChart, targetChart) => {
+                    if (isSyncing || !targetChart) return;
+                    isSyncing = true;
+                    const xScale = sourceChart.scales.x;
+                    if (xScale) {
+                        targetChart.zoomScale('x', xScale.min, xScale.max, 'default');
+                    }
+                    isSyncing = false;
+                };
+
+                const zoomOptions = {
+                    zoom: {
+                        wheel: { enabled: true, speed: 0.05 },
+                        pinch: { enabled: true },
+                        mode: 'x',
+                        onZoom: ({ chart }) => syncZoom(chart, chartKVolumeInstance),
+                    },
+                    pan: {
+                        enabled: true,
+                        mode: 'x',
+                        threshold: 5,
+                        onPan: ({ chart }) => syncZoom(chart, chartKVolumeInstance),
+                    },
+                    limits: {
+                        x: { min: 'original', max: 'original' }
+                    }
+                };
+
+                // 6. 渲染主图 (Candlestick)
+                console.log("[KChart] Creating Chart instance...");
+                
+                // 修复：严格检查 Chart.js Financial 插件是否可用
+                const candlestickController = Chart.registry.getController('candlestick');
+                if (!candlestickController) {
+                    console.error("[KChart] CRITICAL: 'candlestick' controller is NOT registered.");
+                    console.error("[KChart] Please ensure 'chartjs-chart-financial' script is loaded correctly and is compatible with Chart.js 3.x.");
+                    
+                    // 尝试备用方案：使用 Bar 图表模拟，或者显示详细错误
+                    // 这里我们选择显示详细错误，因为 Bar 模拟效果较差且复杂
+                    throw new Error("图表插件加载失败：'candlestick' 控制器未注册。请刷新页面或检查网络连接。如果问题持续，可能是 CDN 资源不可用。");
+                }
+
+                chartKPriceInstance = new Chart(ctxPrice, {
+                    type: 'candlestick',
+                    data: {
+                        datasets: [
+                            {
+                                label: 'K线',
+                                data: financialData,
+                                yAxisID: 'y',
+                                color: {
+                                    up: '#f43f3e',
+                                    down: '#00b42a',
+                                    unchanged: '#999'
+                                },
+                                borderColor: {
+                                    up: '#f43f3e',
+                                    down: '#00b42a',
+                                    unchanged: '#999'
+                                },
+                                borderWidth: 1,
+                                barPercentage: 0.6,
+                                order: 2
+                            },
+                            { 
+                                label: 'MA5', 
+                                data: ma5, 
+                                type: 'line', 
+                                borderColor: '#ff9900', 
+                                borderWidth: 1.5, 
+                                pointRadius: 0, 
+                                fill: false, 
+                                tension: 0.1, 
+                                yAxisID: 'y', 
+                                order: 1 
+                            },
+                            { 
+                                label: 'MA10', 
+                                data: ma10, 
+                                type: 'line', 
+                                borderColor: '#0099ff', 
+                                borderWidth: 1.5, 
+                                pointRadius: 0, 
+                                fill: false, 
+                                tension: 0.1, 
+                                yAxisID: 'y', 
+                                order: 1 
+                            },
+                            { 
+                                label: 'MA30', 
+                                data: ma30, 
+                                type: 'line', 
+                                borderColor: '#cc00ff', 
+                                borderWidth: 1.5, 
+                                pointRadius: 0, 
+                                fill: false, 
+                                tension: 0.1, 
+                                yAxisID: 'y', 
+                                order: 1 
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: { display: true, position: 'top', labels: { boxWidth: 10, usePointStyle: true, font: { size: 10 } } },
+                            zoom: zoomOptions,
+                            tooltip: {
+                                enabled: true,
+                                backgroundColor: 'rgba(0,0,0,0.8)',
+                                titleColor: '#fff',
+                                bodyColor: '#fff',
+                                borderColor: '#444',
+                                borderWidth: 1,
+                                callbacks: {
+                                    title: (items) => {
+                                        if (!items || items.length === 0) return '';
+                                        const ts = items[0].parsed.x;
+                                        return DateTime.fromMillis(ts).toFormat('yyyy-MM-dd');
+                                    },
+                                    label: (context) => {
+                                        const d = context.raw;
+                                        if (context.dataset.type === 'line') {
+                                            return `${context.dataset.label}: ${d.y ? d.y.toFixed(2) : '-'}`;
+                                        }
+                                        if (!d || d.o === undefined) return [];
+                                        const change = d.o > 0 ? ((d.c - d.o) / d.o * 100).toFixed(2) : '0.00';
+                                        const color = d.c >= d.o ? '+' : '';
+                                        return [
+                                            `开: ${d.o.toFixed(2)}`,
+                                            `收: ${d.c.toFixed(2)} (${color}${change}%)`,
+                                            `高: ${d.h.toFixed(2)}`,
+                                            `低: ${d.l.toFixed(2)}`
+                                        ];
+                                    }
+                                }
+                            }
                         },
-                        { label: 'MA5', data: ma5, type: 'line', borderColor: '#0ea5e9', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1, yAxisID: 'y', order: 1 },
-                        { label: 'MA10', data: ma10, type: 'line', borderColor: '#eab308', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1, yAxisID: 'y', order: 1 },
-                        { label: 'MA30', data: ma30, type: 'line', borderColor: '#6366f1', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1, yAxisID: 'y', order: 1 }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: { mode: 'index', intersect: false },
-                    plugins: {
-                        legend: { display: true, position: 'top', labels: { boxWidth: 10, usePointStyle: true } },
-                        zoom: zoomOptions,
-                        tooltip: {
-                            callbacks: {
-                                label: (context) => {
-                                    if (context.dataset.type === 'line') return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}`;
-                                    const idx = context.dataIndex;
-                                    const d = kData[idx];
-                                    if (!d) return '';
-                                    const change = ((d.close - d.open) / d.open * 100).toFixed(2);
-                                    const color = d.close >= d.open ? '+' : '';
-                                    return [`日期: ${d.date}`, `开: ${d.open.toFixed(2)}`, `收: ${d.close.toFixed(2)} (${color}${change}%)`, `高: ${d.high.toFixed(2)}`, `低: ${d.low.toFixed(2)}`];
-                                }
+                        scales: {
+                            x: { 
+                                type: 'time',
+                                // 修复：依赖全局加载的 chartjs-adapter-luxon，不再手动覆盖适配器对象
+                                // 如果自动检测失败，可以尝试显式指定 adapter，但通常不需要
+                                adapters: {
+                                    date: luxon.DateTime
+                                },
+                                time: { 
+                                    unit: 'day', 
+                                    displayFormats: { day: 'MM-dd' },
+                                    tooltipFormat: 'yyyy-MM-dd'
+                                },
+                                grid: { display: false },
+                                ticks: { maxTicksLimit: 6, maxRotation: 0, font: { size: 10 } }
+                            },
+                            y: { 
+                                position: 'right', 
+                                grid: { color: '#f0f0f0', borderDash: [2, 2] }, 
+                                ticks: { callback: (val) => val.toFixed(2), font: { size: 10 } }, 
+                                beginAtZero: false 
                             }
                         }
-                    },
-                    scales: {
-                        x: { display: false, grid: { display: false } },
-                        y: { position: 'right', grid: { color: '#f0f0f0' }, ticks: { callback: (val) => val.toFixed(2) }, beginAtZero: false }
                     }
-                }
-            });
+                });
+                console.log("[KChart] Price chart created successfully.");
 
-            // 6. 渲染副图 - 修复：赋值给全局变量
-            chartKVolumeInstance = new Chart(ctxVol, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: '成交量',
-                        data: volumes,
-                        backgroundColor: volColors,
-                        barPercentage: 0.6,
-                        categoryPercentage: 0.8,
-                        yAxisID: 'y1'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        zoom: zoomOptions, // 同步缩放
-                        tooltip: {
-                            callbacks: {
-                                label: (ctx) => {
-                                    const vol = ctx.parsed.y;
-                                    let unit = '手';
-                                    let val = vol;
-                                    if (vol > 10000) { val = (vol / 10000).toFixed(2); unit = '万手'; }
-                                    return `量: ${val}${unit}`;
+                // 7. 渲染副图 (Volume)
+                chartKVolumeInstance = new Chart(ctxVol, {
+                    type: 'bar',
+                    data: {
+                        datasets: [{
+                            label: '成交量',
+                            data: validVolumes,
+                            yAxisID: 'y1',
+                            barPercentage: 0.6,
+                            categoryPercentage: 0.8
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            zoom: {
+                                zoom: {
+                                    wheel: { enabled: true, speed: 0.05 },
+                                    pinch: { enabled: true },
+                                    mode: 'x',
+                                    onZoom: ({ chart }) => syncZoom(chart, chartKPriceInstance),
+                                },
+                                pan: {
+                                    enabled: true,
+                                    mode: 'x',
+                                    threshold: 5,
+                                    onPan: ({ chart }) => syncZoom(chart, chartKPriceInstance),
+                                },
+                                limits: {
+                                    x: { min: 'original', max: 'original' }
+                                }
+                            },
+                            tooltip: {
+                                backgroundColor: 'rgba(0,0,0,0.8)',
+                                callbacks: {
+                                    title: (items) => {
+                                        if (!items || items.length === 0) return '';
+                                        const ts = items[0].parsed.x;
+                                        return DateTime.fromMillis(ts).toFormat('yyyy-MM-dd');
+                                    },
+                                    label: (ctx) => {
+                                        const vol = ctx.parsed.y;
+                                        let unit = '手';
+                                        let val = vol;
+                                        if (vol > 10000) { val = (vol / 10000).toFixed(2); unit = '万手'; }
+                                        return `量: ${val}${unit}`;
+                                    }
                                 }
                             }
+                        },
+                        scales: {
+                            x: { 
+                                type: 'time',
+                                // 修复：依赖全局加载的 chartjs-adapter-luxon
+                                adapters: {
+                                    date: luxon.DateTime
+                                },
+                                time: { 
+                                    unit: 'day', 
+                                    displayFormats: { day: 'MM-dd' },
+                                    tooltipFormat: 'yyyy-MM-dd'
+                                },
+                                grid: { display: false }, 
+                                ticks: { maxTicksLimit: 6, maxRotation: 0, font: { size: 10 } } 
+                            },
+                            y1: { 
+                                position: 'right', 
+                                display: true, 
+                                grid: { display: false }, 
+                                ticks: { display: false }, 
+                                beginAtZero: true 
+                            }
                         }
-                    },
-                    scales: {
-                        x: { display: true, grid: { display: false }, ticks: { maxTicksLimit: 8, maxRotation: 0 } },
-                        y1: { position: 'right', display: true, grid: { display: false }, ticks: { display: false }, beginAtZero: true }
                     }
-                }
-            });
+                });
+                console.log("[KChart] Volume chart created successfully.");
 
-            // 7. 设置默认显示范围 (最近5个)
-            // 注意：需要在图表渲染完成后执行
-            setTimeout(() => {
-                if (chartKPriceInstance) { // 修复：使用全局变量
-                    chartKPriceInstance.zoomScale('x', initialMinIndex, initialMaxIndex, 'default');
-                }
-                if (chartKVolumeInstance) { // 修复：使用全局变量
-                    chartKVolumeInstance.zoomScale('x', initialMinIndex, initialMaxIndex, 'default');
-                }
-            }, 100);
+                // 8. 设置默认显示范围
+                setTimeout(() => {
+                    if (chartKPriceInstance) {
+                        console.log("[KChart] Setting default zoom range");
+                        chartKPriceInstance.zoomScale('x', defaultMinTime, defaultMaxTime, 'default');
+                    }
+                    if (chartKVolumeInstance) {
+                        chartKVolumeInstance.zoomScale('x', defaultMinTime, defaultMaxTime, 'default');
+                    }
+                }, 100);
+
+            } catch (e) {
+                console.error("[KChart] Critical error during rendering:", e);
+                // 修复：在页面上显示具体错误信息，方便调试
+                drawPlaceholder(ctxPrice, "图表渲染错误: " + e.message);
+                drawPlaceholder(ctxVol, "");
+            }
         }
 
         function drawPlaceholder(ctx, text) {
-            if (!ctx.canvas) return;
-            ctx.canvas.width = ctx.canvas.offsetWidth || 300;
-            ctx.canvas.height = ctx.canvas.offsetHeight || 150;
+            if (!ctx || !ctx.canvas) return;
+            // 确保 Canvas 有尺寸
+            if (ctx.canvas.width === 0 || ctx.canvas.height === 0) {
+                ctx.canvas.width = ctx.canvas.offsetWidth || 300;
+                ctx.canvas.height = ctx.canvas.offsetHeight || 150;
+            }
             ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
             ctx.font = "14px PingFang SC";
             ctx.fillStyle = "#999";

@@ -1,0 +1,93 @@
+:root { --primary: #d81e06; --bg: #f5f5f5; --card: #fff; --up: #f43f3e; --down: #00b42a; }
+body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #333; user-select: none; }
+.container { max-width: 1200px; margin: 0 auto; }
+
+.section-header { display: flex; justify-content: space-between; align-items: center; margin: 20px 0 10px 0; }
+.section-title { font-size: 1.1em; font-weight: bold; border-left: 4px solid var(--primary); padding-left: 10px; }
+.index-board { display: flex; gap: 15px; margin-bottom: 20px; overflow-x: auto; padding-bottom: 5px; }
+.index-card { flex: 1; min-width: 140px; background: var(--card); padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: center; transition: transform 0.2s; position: relative; }
+.index-card:hover { transform: translateY(-2px); }
+.index-name { font-size: 0.9em; color: #666; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.index-price { font-size: 1.4em; font-weight: bold; }
+.index-change { font-size: 0.9em; margin-top: 5px; }
+
+.controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+.input-group { display: flex; gap: 10px; }
+input { padding: 8px; border: 1px solid #ddd; border-radius: 4px; width: 150px; }
+.btn { padding: 8px 16px; background: var(--primary); color: white; border: none; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; }
+.btn:hover { opacity: 0.9; }
+.btn-secondary { background: #64748b; }
+.btn-small { padding: 4px 8px; font-size: 12px; margin-right: 5px; }
+.btn-ai { background: #7c3aed; }
+
+table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 8px; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; }
+th { background: #fafafa; cursor: pointer; user-select: none; font-weight: 600; color: #475569; }
+th:hover { background: #f1f5f9; }
+.up { color: var(--up); } .down { color: var(--down); }
+
+/* 拖拽样式 */
+tr.dragging { opacity: 0.5; background: #f0f0f0; }
+tr.drag-over { border-top: 2px solid var(--primary); }
+
+/* 右键菜单 */
+#context-menu {
+    display: none;
+    position: absolute;
+    z-index: 1000;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    padding: 5px 0;
+    min-width: 120px;
+}
+#context-menu div {
+    padding: 8px 15px;
+    cursor: pointer;
+    font-size: 14px;
+}
+#context-menu div:hover { background: #f5f5f5; color: var(--primary); }
+#context-menu .divider { height: 1px; background: #eee; margin: 5px 0; padding: 0; }
+
+#detail-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; justify-content: center; align-items: center; }
+.detail-content { background: #fff; width: 90%; max-width: 900px; padding: 20px; border-radius: 8px; position: relative; max-height: 90vh; overflow-y: auto; }
+.close-btn { position: absolute; top: 10px; right: 15px; font-size: 24px; cursor: pointer; color: #666; }
+.chart-tabs { display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+.chart-tab { padding: 5px 15px; cursor: pointer; border-radius: 4px; }
+.chart-tab.active { background: var(--primary); color: white; }
+.chart-container { height: 400px; margin-top: 20px; display: flex; flex-direction: column; gap: 5px; }
+/* 新增：分时图上下布局样式 */
+.chart-wrapper { position: relative; width: 100%; }
+#chart-price { height: 300px; width: 100%; }
+#chart-volume { height: 100px; width: 100%; }
+
+#index-input-area { display: none; margin-bottom: 15px; background:#fff; padding:10px; border-radius:8px; border: 1px solid #eee; }
+.loading-text { color: #999; font-style: italic; }
+
+/* AI 分析弹窗 */
+#ai-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 101; justify-content: center; align-items: center; }
+.ai-content { background: #fff; width: 90%; max-width: 600px; padding: 20px; border-radius: 8px; position: relative; }
+
+/* 详情页增强样式 */
+.detail-header-info { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+.dh-left h2 { margin: 0; font-size: 1.5em; }
+.dh-left span { color: #666; font-size: 0.9em; }
+.dh-right { text-align: right; }
+.dh-price { font-size: 1.8em; font-weight: bold; }
+.dh-change { font-size: 1.1em; }
+
+.detail-stats-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 20px; background: #f9fafb; padding: 10px; border-radius: 6px; }
+.stat-item { text-align: center; }
+.stat-label { font-size: 0.8em; color: #888; margin-bottom: 2px; }
+.stat-value { font-weight: 600; font-size: 0.95em; }
+
+.money-flow-container { margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px; }
+.mf-title { font-size: 1em; font-weight: bold; margin-bottom: 10px; }
+.mf-bars { display: flex; flex-direction: column; gap: 8px; }
+.mf-row { display: flex; align-items: center; font-size: 0.85em; }
+.mf-label { width: 60px; color: #666; }
+.mf-bar-bg { flex: 1; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; position: relative; margin: 0 10px; }
+.mf-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
+.mf-val { width: 80px; text-align: right; font-family: monospace; }
+.mf-center-line { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #ccc; z-index: 1; }
