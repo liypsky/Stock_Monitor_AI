@@ -14,6 +14,8 @@ use std::sync::LazyLock;
 use encoding_rs::GBK;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::Path;
+use std::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockInfo {
@@ -72,10 +74,65 @@ static RE_SINA_DATA: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"var\s+hq_str_(\w+)\s*=\s*"([^"]*)""#).unwrap()
 });
 
+// 新增：配置结构体，用于序列化保存
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct AppConfig {
+    indices: Vec<String>,
+    stocks: Vec<String>,
+}
+
+// 新增：加载配置的辅助函数
+fn load_config_from_file() -> Option<AppConfig> {
+    let config_path = Path::new("data/config.json");
+    if config_path.exists() {
+        if let Ok(content) = fs::read_to_string(config_path) {
+            if let Ok(config) = serde_json::from_str::<AppConfig>(&content) {
+                println!("✅ Loaded config from data/config.json");
+                return Some(config);
+            } else {
+                eprintln!("⚠️ Failed to parse config.json, using defaults");
+            }
+        }
+    }
+    None
+}
+
+// 新增：保存配置的辅助函数
+fn save_config_to_file(indices: &[String], stocks: &[String]) {
+    // 确保 data 目录存在
+    let data_dir = Path::new("data");
+    if !data_dir.exists() {
+        if let Err(e) = fs::create_dir_all(data_dir) {
+            eprintln!("❌ Failed to create data directory: {}", e);
+            return;
+        }
+    }
+
+    let config = AppConfig {
+        indices: indices.to_vec(),
+        stocks: stocks.to_vec(),
+    };
+
+    let config_path = Path::new("data/config.json");
+    match serde_json::to_string_pretty(&config) {
+        Ok(json_str) => {
+            if let Err(e) = fs::write(config_path, json_str) {
+                eprintln!("❌ Failed to write config.json: {}", e);
+            } else {
+                println!("💾 Config saved to data/config.json");
+            }
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to serialize config: {}", e);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    // 默认配置
     let default_indices = vec![
         "sh000001".to_string(),
         "sz399001".to_string(),
@@ -90,11 +147,18 @@ async fn main() {
         "sz002594".to_string(),
     ];
 
+    // 尝试从文件加载配置，否则使用默认值
+    let (initial_indices, initial_stocks) = if let Some(saved_config) = load_config_from_file() {
+        (saved_config.indices, saved_config.stocks)
+    } else {
+        (default_indices, default_stocks)
+    };
+
     let notify = Arc::new(Notify::new());
 
     let state = AppState {
-        index_list: Arc::new(RwLock::new(default_indices)),
-        stock_list: Arc::new(RwLock::new(default_stocks)),
+        index_list: Arc::new(RwLock::new(initial_indices)),
+        stock_list: Arc::new(RwLock::new(initial_stocks)),
         market_data: Arc::new(RwLock::new(vec![])),
         data_refresh_notify: notify.clone(),
     };
@@ -332,6 +396,13 @@ async fn add_stock(
         if !list.contains(&normalized_code) {
             list.push(normalized_code.clone());
             println!("✅ Backend: Added stock {}", normalized_code);
+            
+            // 保存配置
+            let indices = state.index_list.read().await.clone();
+            let stocks = list.clone();
+            drop(list); // 释放写锁
+            save_config_to_file(&indices, &stocks);
+            
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "added", "code": normalized_code}));
         }
@@ -355,6 +426,13 @@ async fn remove_stock(
         if let Some(pos) = list.iter().position(|x| x == &normalized_code) {
             list.remove(pos);
             println!("✅ Backend: Removed stock {}", normalized_code);
+            
+            // 保存配置
+            let indices = state.index_list.read().await.clone();
+            let stocks = list.clone();
+            drop(list); // 释放写锁
+            save_config_to_file(&indices, &stocks);
+            
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "removed"}));
         }
@@ -374,8 +452,14 @@ async fn reorder_stocks(
             .filter_map(|v| v.as_str().map(|s| normalize_stock_code(s)))
             .collect();
         
-        *list = new_codes;
+        *list = new_codes.clone();
         println!("✅ Backend: Stocks reordered");
+        
+        // 保存配置
+        let indices = state.index_list.read().await.clone();
+        drop(list); // 释放写锁
+        save_config_to_file(&indices, &new_codes);
+        
         state.data_refresh_notify.notify_one();
         return Json(json!({"status": "success"}));
     }
@@ -412,6 +496,13 @@ async fn add_index(
         if !list.contains(&normalized_code) {
             list.push(normalized_code.clone());
             println!("✅ Backend: Added index {}", normalized_code);
+            
+            // 保存配置
+            let stocks = state.stock_list.read().await.clone();
+            let indices = list.clone();
+            drop(list); // 释放写锁
+            save_config_to_file(&indices, &stocks);
+            
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "added"}));
         }
@@ -754,6 +845,13 @@ async fn remove_index(
         if let Some(pos) = list.iter().position(|x| x == &normalized_code) {
             list.remove(pos);
             println!("✅ Backend: Removed index {}", normalized_code);
+            
+            // 保存配置
+            let stocks = state.stock_list.read().await.clone();
+            let indices = list.clone();
+            drop(list); // 释放写锁
+            save_config_to_file(&indices, &stocks);
+            
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "removed"}));
         }
