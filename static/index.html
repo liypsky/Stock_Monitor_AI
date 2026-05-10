@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>A股实时监控中心</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- 新增：引入 Hammer.js 用于手势识别 (chartjs-plugin-zoom 依赖) -->
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+    <!-- 新增：引入 Chart.js Zoom 插件 -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
     <style>
         :root { --primary: #d81e06; --bg: #f5f5f5; --card: #fff; --up: #f43f3e; --down: #00b42a; }
         body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #333; user-select: none; }
@@ -264,6 +268,8 @@
         // 新增：存储详情页的实时数据，供图表使用
         let currentDetailData = null;
         let refreshTimer = null; // 新增：定时器引用
+        // 新增：前端K线数据缓存 { "symbol_type": data }
+        let kLineCache = {}; 
 
         async function init() {
             await refreshAll();
@@ -694,30 +700,32 @@
 
         // --- 详情与图表 ---
         async function showDetail(symbol, name) {
-            currentDetailSymbol = symbol;
+            currentDetailSymbol = symbol; // 修复：使用全局变量而非 AppState
             document.getElementById('detail-view').style.display = 'flex';
             document.getElementById('detail-name').innerText = name;
             document.getElementById('detail-symbol').innerText = symbol;
             
             // 重置UI
+            resetDetailUI();
+            
+            // 加载真实数据
+            await loadDetailData();
+            
+            // 默认显示分时
+            switchChart('day');
+        }
+
+        function resetDetailUI() {
             document.getElementById('detail-price').innerText = '--';
             document.getElementById('detail-change').innerText = '--';
             ['stat-open', 'stat-preclose', 'stat-high', 'stat-low', 'stat-limitup', 'stat-limitdown'].forEach(id => {
                 document.getElementById(id).innerText = '--';
             });
             document.getElementById('mf-bars').innerHTML = '<div style="text-align:center; color:#999; padding:10px;">加载中...</div>';
-
-            // 加载真实数据
-            await loadDetailData();
-            
-            // 默认显示分时
-            currentChartType = 'day';
-            updateChartTabs('day');
-            renderChart('day');
         }
 
         async function loadDetailData() {
-            if (!currentDetailSymbol) return;
+            if (!currentDetailSymbol) return; // 修复：使用全局变量
             try {
                 // 1. 获取基本行情详情
                 const res = await fetch(`/api/stock_detail?code=${currentDetailSymbol}`);
@@ -831,7 +839,9 @@
 
         function closeDetail() {
             document.getElementById('detail-view').style.display = 'none';
-            currentDetailSymbol = '';
+            currentDetailSymbol = ''; // 修复：使用全局变量
+            // 可选：销毁图表以释放内存，或者保留以便快速再次打开
+            // destroyCharts(); 
         }
 
         function updateChartTabs(type) {
@@ -845,7 +855,7 @@
         }
 
         function switchChart(type) {
-            currentChartType = type;
+            currentChartType = type; // 修复：使用全局变量
             updateChartTabs(type);
             
             // 切换容器显示
@@ -891,7 +901,7 @@
             const basePrice = currentDetailData && currentDetailData.pre_close > 0 ? currentDetailData.pre_close : (currentDetailData ? currentDetailData.price : 10.0);
             
             try {
-                const res = await fetch(`/api/stock_minute_data?code=${currentDetailSymbol}`);
+                const res = await fetch(`/api/stock_minute_data?code=${currentDetailSymbol}`); // 修复：使用全局变量
                 const result = await res.json();
                 
                 let prices = [];
@@ -1086,262 +1096,214 @@
             }
         }
 
+        // --- K线图模块 (增强版：缩放 + 缓存 + 默认范围) ---
         async function renderKChart(type) {
             const canvasPrice = document.getElementById('chart-k-price');
             const canvasVol = document.getElementById('chart-k-volume');
 
-            if (!canvasPrice || !canvasVol) {
-                console.error("K-Line Chart canvases not found");
-                return;
-            }
+            if (!canvasPrice || !canvasVol) return;
 
             const ctxPrice = canvasPrice.getContext('2d');
             const ctxVol = canvasVol.getContext('2d');
 
+            // 销毁旧实例 - 修复：使用全局变量
             if (chartKPriceInstance) chartKPriceInstance.destroy();
             if (chartKVolumeInstance) chartKVolumeInstance.destroy();
 
-            // 1. 从后端获取真实 K 线数据
-            try {
-                console.log(`Fetching K-line data for ${currentDetailSymbol} type ${type}`);
-                const res = await fetch(`/api/stock_kline_data?code=${currentDetailSymbol}&type=${type}`);
-                const result = await res.json();
-                console.log("K-line API Result:", result);
+            const symbol = currentDetailSymbol; // 修复：使用全局变量
+            const cacheKey = `${symbol}_${type}`;
 
-                if (result.status !== 'success' || !result.data || result.data.length === 0) {
-                    console.warn("No K-line data available or API error");
-                    // 绘制提示文字
-                    const drawPlaceholder = (ctx, text) => {
-                        ctx.canvas.width = ctx.canvas.offsetWidth || 300;
-                        ctx.canvas.height = ctx.canvas.offsetHeight || 150;
-                        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-                        ctx.font = "14px PingFang SC";
-                        ctx.fillStyle = "#999";
-                        ctx.textAlign = "center";
-                        ctx.textBaseline = "middle";
-                        ctx.fillText(text, ctx.canvas.width / 2, ctx.canvas.height / 2);
-                    };
-                    drawPlaceholder(ctxPrice, "暂无K线数据 (请检查网络连接或股票代码)");
+            // 1. 检查前端缓存 - 修复：使用全局变量 kLineCache
+            let kData = kLineCache[cacheKey];
+
+            if (!kData) {
+                // 2. 缓存未命中，请求后端
+                try {
+                    console.log(`Fetching K-line data for ${symbol} type ${type}`);
+                    const res = await fetch(`/api/stock_kline_data?code=${symbol}&type=${type}`);
+                    const result = await res.json();
+                    
+                    if (result.status === 'success' && result.data) {
+                        kData = result.data;
+                        kLineCache[cacheKey] = kData; // 修复：存入全局缓存
+                    } else {
+                        throw new Error("No data");
+                    }
+                } catch (e) {
+                    console.error("Fetch K-line error:", e);
+                    drawPlaceholder(ctxPrice, "暂无K线数据");
                     drawPlaceholder(ctxVol, "");
                     return;
                 }
+            }
 
-                const kData = result.data; // Array of { date, open, high, low, close, volume }
-                
-                // 准备标签 (日期)
-                // 根据类型格式化日期显示，避免过于拥挤
-                const labels = kData.map(d => {
-                    // d.date format: YYYY-MM-DD
-                    if (!d.date) return "";
-                    if (type === 'kmonth') return d.date.substring(0, 7); // YYYY-MM
-                    if (type === 'kweek') return d.date.substring(5); // MM-DD
-                    return d.date.substring(5); // MM-DD for daily
-                });
+            if (!kData || kData.length === 0) {
+                drawPlaceholder(ctxPrice, "暂无数据");
+                drawPlaceholder(ctxVol, "");
+                return;
+            }
 
-                // 计算均线
-                const calculateMA = (data, period) => {
-                    let ma = [];
-                    for (let i = 0; i < data.length; i++) {
-                        if (i < period - 1) {
-                            ma.push(null);
-                            continue;
-                        }
-                        let sum = 0;
-                        for (let j = 0; j < period; j++) {
-                            sum += data[i - j].close;
-                        }
-                        ma.push(sum / period);
-                    }
-                    return ma;
-                };
+            // 3. 数据处理
+            // 默认显示最近 5 个单位 (5日/5周/5月)
+            const defaultViewCount = 5;
+            const startIndex = Math.max(0, kData.length - defaultViewCount);
+            const initialMinIndex = startIndex - 2; // 稍微多留一点左边距
+            const initialMaxIndex = kData.length - 1;
 
-                const ma5 = calculateMA(kData, 5);
-                const ma10 = calculateMA(kData, 10);
-                const ma30 = calculateMA(kData, 30);
+            const labels = kData.map(d => {
+                if (!d.date) return "";
+                if (type === 'kmonth') return d.date.substring(0, 7);
+                return d.date.substring(5);
+            });
 
-                // 准备 K 线实体数据 (Floating Bar: [min, max])
-                const candleData = kData.map(d => {
-                    return [Number(Math.min(d.open, d.close)), Number(Math.max(d.open, d.close))];
-                });
+            const candleData = kData.map(d => [Number(Math.min(d.open, d.close)), Number(Math.max(d.open, d.close))]);
+            const candleColors = kData.map(d => d.close >= d.open ? '#f43f3e' : '#00b42a');
+            const volColors = kData.map(d => d.close >= d.open ? 'rgba(244, 63, 62, 0.8)' : 'rgba(0, 180, 42, 0.8)');
+            const volumes = kData.map(d => Number(d.volume));
 
-                // 准备颜色：红涨绿跌 (A股习惯)
-                const candleColors = kData.map(d => {
-                    return d.close >= d.open ? '#f43f3e' : '#00b42a';
-                });
-                
-                // 准备成交量颜色
-                const volColors = kData.map(d => {
-                    return d.close >= d.open ? 'rgba(244, 63, 62, 0.8)' : 'rgba(0, 180, 42, 0.8)';
-                });
+            // 计算均线
+            const calculateMA = (data, period) => {
+                let ma = [];
+                for (let i = 0; i < data.length; i++) {
+                    if (i < period - 1) { ma.push(null); continue; }
+                    let sum = 0;
+                    for (let j = 0; j < period; j++) sum += data[i - j].close;
+                    ma.push(sum / period);
+                }
+                return ma;
+            };
 
-                // 2. 绘制主图 (K线 + 均线)
-                chartKPriceInstance = new Chart(ctxPrice, {
-                    type: 'bar',
-                    data: {
-                        labels: labels,
-                        datasets: [
-                            {
-                                label: 'K线',
-                                data: candleData,
-                                backgroundColor: candleColors,
-                                borderColor: candleColors, // 添加边框颜色以防万一
-                                borderWidth: 1,
-                                barPercentage: 0.6,
-                                categoryPercentage: 0.8,
-                                yAxisID: 'y',
-                                order: 2
-                            },
-                            {
-                                label: 'MA5',
-                                data: ma5,
-                                type: 'line',
-                                borderColor: '#0ea5e9', // Sky Blue
-                                borderWidth: 1.5,
-                                pointRadius: 0,
-                                fill: false,
-                                tension: 0.1,
-                                yAxisID: 'y',
-                                order: 1
-                            },
-                            {
-                                label: 'MA10',
-                                data: ma10,
-                                type: 'line',
-                                borderColor: '#eab308', // Yellow
-                                borderWidth: 1.5,
-                                pointRadius: 0,
-                                fill: false,
-                                tension: 0.1,
-                                yAxisID: 'y',
-                                order: 1
-                            },
-                            {
-                                label: 'MA30',
-                                data: ma30,
-                                type: 'line',
-                                borderColor: '#6366f1', // Indigo
-                                borderWidth: 1.5,
-                                pointRadius: 0,
-                                fill: false,
-                                tension: 0.1,
-                                yAxisID: 'y',
-                                order: 1
-                            }
-                        ]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        interaction: { mode: 'index', intersect: false },
-                        plugins: {
-                            legend: { display: true, position: 'top', labels: { boxWidth: 10, usePointStyle: true } },
-                            tooltip: {
-                                callbacks: {
-                                    label: (context) => {
-                                        if (context.dataset.type === 'line') {
-                                            return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}`;
-                                        } else {
-                                            // K线 Tooltip 增强
-                                            const idx = context.dataIndex;
-                                            const d = kData[idx];
-                                            if (!d) return '';
-                                            const change = ((d.close - d.open) / d.open * 100).toFixed(2);
-                                            const color = d.close >= d.open ? '+' : '';
-                                            return [
-                                                `日期: ${d.date}`,
-                                                `开: ${d.open.toFixed(2)}`,
-                                                `收: ${d.close.toFixed(2)} (${color}${change}%)`,
-                                                `高: ${d.high.toFixed(2)}`,
-                                                `低: ${d.low.toFixed(2)}`
-                                            ];
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        scales: {
-                            x: { 
-                                display: false, // 隐藏主图X轴
-                                grid: { display: false }
-                            },
-                            y: {
-                                position: 'right',
-                                grid: { color: '#f0f0f0' },
-                                ticks: { callback: (val) => val.toFixed(2) },
-                                beginAtZero: false
-                            }
-                        }
-                    }
-                });
+            const ma5 = calculateMA(kData, 5);
+            const ma10 = calculateMA(kData, 10);
+            const ma30 = calculateMA(kData, 30);
 
-                // 3. 绘制副图 (成交量)
-                chartKVolumeInstance = new Chart(ctxVol, {
-                    type: 'bar',
-                    data: {
-                        labels: labels,
-                        datasets: [{
-                            label: '成交量',
-                            data: kData.map(d => Number(d.volume)),
-                            backgroundColor: volColors,
+            // 4. 配置缩放插件
+            const zoomOptions = {
+                zoom: {
+                    wheel: { enabled: true },
+                    pinch: { enabled: true },
+                    mode: 'x',
+                },
+                pan: {
+                    enabled: true,
+                    mode: 'x',
+                },
+                limits: {
+                    x: { min: 'original', max: 'original' }
+                }
+            };
+
+            // 5. 渲染主图 - 修复：赋值给全局变量
+            chartKPriceInstance = new Chart(ctxPrice, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'K线',
+                            data: candleData,
+                            backgroundColor: candleColors,
+                            borderColor: candleColors,
+                            borderWidth: 1,
                             barPercentage: 0.6,
                             categoryPercentage: 0.8,
-                            yAxisID: 'y1'
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: { display: false },
-                            tooltip: {
-                                callbacks: {
-                                    label: (ctx) => {
-                                        const vol = ctx.parsed.y;
-                                        let unit = '手';
-                                        let val = vol;
-                                        if (vol > 10000) {
-                                            val = (vol / 10000).toFixed(2);
-                                            unit = '万手';
-                                        }
-                                        return `量: ${val}${unit}`;
-                                    }
+                            yAxisID: 'y',
+                            order: 2
+                        },
+                        { label: 'MA5', data: ma5, type: 'line', borderColor: '#0ea5e9', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1, yAxisID: 'y', order: 1 },
+                        { label: 'MA10', data: ma10, type: 'line', borderColor: '#eab308', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1, yAxisID: 'y', order: 1 },
+                        { label: 'MA30', data: ma30, type: 'line', borderColor: '#6366f1', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1, yAxisID: 'y', order: 1 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: true, position: 'top', labels: { boxWidth: 10, usePointStyle: true } },
+                        zoom: zoomOptions,
+                        tooltip: {
+                            callbacks: {
+                                label: (context) => {
+                                    if (context.dataset.type === 'line') return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}`;
+                                    const idx = context.dataIndex;
+                                    const d = kData[idx];
+                                    if (!d) return '';
+                                    const change = ((d.close - d.open) / d.open * 100).toFixed(2);
+                                    const color = d.close >= d.open ? '+' : '';
+                                    return [`日期: ${d.date}`, `开: ${d.open.toFixed(2)}`, `收: ${d.close.toFixed(2)} (${color}${change}%)`, `高: ${d.high.toFixed(2)}`, `低: ${d.low.toFixed(2)}`];
                                 }
                             }
-                        },
-                        scales: {
-                            x: { 
-                                display: true, // 显示副图X轴
-                                grid: { display: false },
-                                ticks: { maxTicksLimit: 8, maxRotation: 0, autoSkipPadding: 10 }
-                            },
-                            y1: {
-                                position: 'right',
-                                display: true,
-                                grid: { display: false },
-                                ticks: { 
-                                    display: false, // 隐藏刻度数值，保持简洁
-                                },
-                                beginAtZero: true
+                        }
+                    },
+                    scales: {
+                        x: { display: false, grid: { display: false } },
+                        y: { position: 'right', grid: { color: '#f0f0f0' }, ticks: { callback: (val) => val.toFixed(2) }, beginAtZero: false }
+                    }
+                }
+            });
+
+            // 6. 渲染副图 - 修复：赋值给全局变量
+            chartKVolumeInstance = new Chart(ctxVol, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '成交量',
+                        data: volumes,
+                        backgroundColor: volColors,
+                        barPercentage: 0.6,
+                        categoryPercentage: 0.8,
+                        yAxisID: 'y1'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        zoom: zoomOptions, // 同步缩放
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => {
+                                    const vol = ctx.parsed.y;
+                                    let unit = '手';
+                                    let val = vol;
+                                    if (vol > 10000) { val = (vol / 10000).toFixed(2); unit = '万手'; }
+                                    return `量: ${val}${unit}`;
+                                }
                             }
                         }
+                    },
+                    scales: {
+                        x: { display: true, grid: { display: false }, ticks: { maxTicksLimit: 8, maxRotation: 0 } },
+                        y1: { position: 'right', display: true, grid: { display: false }, ticks: { display: false }, beginAtZero: true }
                     }
-                });
+                }
+            });
 
-            } catch (e) {
-                console.error("Render K chart error:", e);
-                const drawPlaceholder = (ctx, text) => {
-                    ctx.canvas.width = ctx.canvas.offsetWidth || 300;
-                    ctx.canvas.height = ctx.canvas.offsetHeight || 150;
-                    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-                    ctx.font = "14px PingFang SC";
-                    ctx.fillStyle = "#999";
-                    ctx.textAlign = "center";
-                    ctx.textBaseline = "middle";
-                    ctx.fillText(text, ctx.canvas.width / 2, ctx.canvas.height / 2);
-                };
-                drawPlaceholder(ctxPrice, "渲染K线图出错");
-                drawPlaceholder(ctxVol, "");
-            }
+            // 7. 设置默认显示范围 (最近5个)
+            // 注意：需要在图表渲染完成后执行
+            setTimeout(() => {
+                if (chartKPriceInstance) { // 修复：使用全局变量
+                    chartKPriceInstance.zoomScale('x', initialMinIndex, initialMaxIndex, 'default');
+                }
+                if (chartKVolumeInstance) { // 修复：使用全局变量
+                    chartKVolumeInstance.zoomScale('x', initialMinIndex, initialMaxIndex, 'default');
+                }
+            }, 100);
+        }
+
+        function drawPlaceholder(ctx, text) {
+            if (!ctx.canvas) return;
+            ctx.canvas.width = ctx.canvas.offsetWidth || 300;
+            ctx.canvas.height = ctx.canvas.offsetHeight || 150;
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            ctx.font = "14px PingFang SC";
+            ctx.fillStyle = "#999";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(text, ctx.canvas.width / 2, ctx.canvas.height / 2);
         }
 
         function generateSimulatedData(count, basePrice, volatility) {

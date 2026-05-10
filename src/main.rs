@@ -14,8 +14,9 @@ use std::sync::LazyLock;
 use encoding_rs::GBK;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::Path;
-use std::fs;
+use tokio::sync::Mutex; // 新增：用于缓存锁
+use std::path::Path; // 新增：修复 Path 未定义
+use std::fs; // 新增：修复 fs 未定义
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockInfo {
@@ -1075,7 +1076,7 @@ async fn fetch_kline_data_from_eastmoney(normalized_code: &str, klt: &str, lmt: 
                     }
                 }
                 // 如果 text 读取成功但解析失败，跳出重试循环，因为重试大概率一样
-                break;
+                return None; // 修复：直接返回 None，而不是 break
             }
             Err(e) => {
                 // 打印更详细的错误信息，帮助判断是 DNS、TLS 还是连接重置
@@ -1091,10 +1092,39 @@ async fn fetch_kline_data_from_eastmoney(normalized_code: &str, klt: &str, lmt: 
             }
         }
     }
+}
+
+// 新增：K线数据缓存结构
+// Key: "symbol_type" (e.g., "sh600519_101"), Value: Vec<KLineDataPoint>
+static KLINE_CACHE: LazyLock<Mutex<HashMap<String, Vec<KLineDataPoint>>>> = 
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+// 新增：从东方财富获取K线数据 (带缓存)
+async fn fetch_kline_data_from_eastmoney_cached(normalized_code: &str, klt: &str, lmt: usize) -> Option<Vec<KLineDataPoint>> {
+    let cache_key = format!("{}_{}", normalized_code, klt);
+    
+    // 1. 尝试从缓存读取
+    {
+        let cache = KLINE_CACHE.lock().await;
+        if let Some(data) = cache.get(&cache_key) {
+            println!("✅ Cache hit for K-line: {}", cache_key);
+            return Some(data.clone());
+        }
+    }
+
+    // 2. 缓存未命中，请求网络
+    println!("🔍 Cache miss, fetching from EastMoney: {}", cache_key);
+    if let Some(data) = fetch_kline_data_from_eastmoney(normalized_code, klt, lmt).await {
+        // 3. 写入缓存
+        let mut cache = KLINE_CACHE.lock().await;
+        cache.insert(cache_key, data.clone());
+        return Some(data);
+    }
+    
     None
 }
 
-// 新增：获取K线数据接口
+// 修改：获取K线数据接口，使用缓存版本
 async fn get_stock_kline_data(
     Query(params): Query<HashMap<String, String>>,
     _state: State<AppState>,
@@ -1103,16 +1133,17 @@ async fn get_stock_kline_data(
         let normalized_code = normalize_stock_code(code);
         let ktype = params.get("type").map(|s| s.as_str()).unwrap_or("kday");
         
-        // 映射前端类型到接口参数及限制条数
-        // 使用东方财富接口，参数 klt: 101=日K, 102=周K, 103=月K
-        let (klt, limit) = match ktype {
-            "kweek" => ("102", 60),  // 周K取60周
-            "kmonth" => ("103", 24), // 月K取24月
-            _ => ("101", 130),       // 日K取130天
+        let klt = match ktype {
+            "kweek" => "102",
+            "kmonth" => "103",
+            _ => "101",
         };
+        
+        // 增加获取数量以支持缩放，例如获取 500 条
+        let limit = 500; 
 
-        // 调用东方财富接口
-        if let Some(data) = fetch_kline_data_from_eastmoney(&normalized_code, klt, limit).await {
+        // 调用带缓存的获取函数
+        if let Some(data) = fetch_kline_data_from_eastmoney_cached(&normalized_code, klt, limit).await {
             return Json(json!({
                 "status": "success",
                 "data": data
