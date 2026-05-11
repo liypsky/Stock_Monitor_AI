@@ -5,7 +5,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::{RwLock, Notify};
+use tokio::sync::RwLock;
+use tokio::sync::Notify;
 use tower_http::services::ServeDir;
 use tracing_subscriber;
 use regex::Regex;
@@ -14,7 +15,6 @@ use std::sync::LazyLock;
 use encoding_rs::GBK;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use tokio::sync::Mutex; // 新增：用于缓存锁
 use std::path::Path; // 新增：修复 Path 未定义
 use std::fs; // 新增：修复 fs 未定义
 
@@ -729,6 +729,33 @@ async fn add_index(
     Json(json!({"status": "error", "msg": "no code"}))
 }
 
+async fn remove_index(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    if let Some(code) = payload.get("code").and_then(|c| c.as_str()) {
+        let normalized_code = normalize_stock_code(code);
+        let mut list = state.index_list.write().await;
+        if let Some(pos) = list.iter().position(|x| x == &normalized_code) {
+            list.remove(pos);
+            println!("✅ Backend: Removed index {}", normalized_code);
+            
+            // 保存配置
+            let stocks = state.stock_list.read().await.clone();
+            let indices = list.clone();
+            let data_interval = state.refresh_interval.read().await.clone();
+            let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
+            drop(list); // 释放写锁
+            save_config_to_file(&indices, &stocks, data_interval, page_interval);
+            
+            state.data_refresh_notify.notify_one();
+            return Json(json!({"status": "success", "msg": "removed"}));
+        }
+        return Json(json!({"status": "error", "msg": "not found"}));
+    }
+    Json(json!({"status": "error", "msg": "invalid payload"}))
+}
+
 async fn fetch_realtime_data(state: AppState, notify: Arc<Notify>) {
     // 修改：构建更健壮的 Client，强制 HTTP/1.1，增加更完整的 Header
     let client = reqwest::Client::builder()
@@ -851,59 +878,246 @@ async fn fetch_realtime_data(state: AppState, notify: Arc<Notify>) {
                     if e.is_timeout() || e.is_connect() {
                         retries -= 1;
                         if retries >= 0 {
-                            // 指数退避等待
-                            tokio::time::sleep(std::time::Duration::from_millis(1000 * (3 - retries) as u64)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                             continue;
                         }
                     } else {
-                        // 其他错误（如 DNS 解析失败）通常重试无效，但为了稳健性仍可重试一次
+                        // 其他错误也重试，但间隔稍短
                         retries -= 1;
                         if retries >= 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                             continue;
                         }
                     }
                 }
             }
-            // 如果执行到这里，说明要么成功，要么重试耗尽
-            break;
         }
-
+        
         if !success {
-            eprintln!("⚠️ Failed to fetch market data after retries. Keeping old data.");
+            eprintln!("❌ Failed to fetch data after all retries");
         }
     }
 }
 
-fn parse_sina_data(raw_text: &str) -> Vec<StockInfo> {
-    let mut results = vec![];
-    if !RE_SINA_DATA.is_match(raw_text) {
-        if raw_text.len() > 20 {
-            eprintln!("⚠️ Regex did not match any data in raw text.");
-        }
-        return results;
-    }
+async fn get_stock_minute_data(
+    Query(params): Query<HashMap<String, String>>,
+    _state: State<AppState>,
+) -> Json<Value> {
+    if let Some(code) = params.get("code") {
+        let normalized_code = normalize_stock_code(code);
+        let datalen = params.get("datalen").unwrap_or(&"240".to_string()).parse::<usize>().unwrap_or(240);
 
-    for cap in RE_SINA_DATA.captures_iter(raw_text) {
-        let code = &cap[1];
+        // 转换代码格式为东方财富接口所需格式
+        // sh600000 -> 1.600000, sz000001 -> 0.000001
+        let secid = if normalized_code.starts_with("sh") {
+            format!("1.{}", &normalized_code[2..])
+        } else if normalized_code.starts_with("sz") {
+            format!("0.{}", &normalized_code[2..])
+        } else if normalized_code.starts_with("bj") {
+            format!("0.{}", &normalized_code[2..])
+        } else {
+            format!("0.{}", normalized_code)
+        };
+
+        let url = format!(
+            "http://push2.eastmoney.com/api/qt/stock/trends2/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&ut=fa5fd1943c7b386f172d6893dbfba10b&ndays=1&iscr=0&iscca=0&datalen={}",
+            secid, datalen
+        );
+
+        let client = reqwest::Client::builder()
+            .default_headers({
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert("User-Agent", reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
+                headers.insert("Referer", reqwest::header::HeaderValue::from_static("http://quote.eastmoney.com/"));
+                headers
+            })
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    // 解析 JSON
+                    if let Ok(root) = serde_json::from_str::<Value>(&text) {
+                        if let Some(data) = root.get("data") {
+                            if let Some(trends) = data.get("trends") {
+                                if let Some(arr) = trends.as_array() {
+                                    let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
+                                    
+                                    // 获取交易日期，用于构建完整时间戳
+                                    // 东财接口 tradeDate 格式通常为 "2023-10-27"
+                                    let trade_date = data.get("tradeDate").and_then(|v| v.as_str()).unwrap_or("");
+
+                                    for item in arr {
+                                        if let Some(s) = item.as_str() {
+                                            let parts: Vec<&str> = s.split(',').collect();
+                                            // 格式: 时间,当前价,均价,成交量(手),成交额(元)
+                                            // f51:时间 (HH:MM), f52:价格, f53:均价, f54:成交量, f55:成交额
+                                            if parts.len() >= 5 {
+                                                let time_str_raw = parts[0].trim(); // HH:MM
+                                                let price = parts[1].parse::<f64>().unwrap_or(0.0);
+                                                let avg_price = parts[2].parse::<f64>().unwrap_or(0.0);
+                                                let volume = parts[3].parse::<f64>().unwrap_or(0.0); // 手
+                                                
+                                                // 修复：构建标准时间字符串 "YYYY-MM-DD HH:mm"
+                                                // Lightweight Charts 支持此格式
+                                                let full_time = if !trade_date.is_empty() && !time_str_raw.is_empty() {
+                                                    // 确保 time_str_raw 是 HH:MM 格式，防止包含秒或其他字符
+                                                    // 东财通常返回 "09:30", "10:00" 等
+                                                    let clean_time = if time_str_raw.len() >= 5 {
+                                                        time_str_raw[..5].to_string()
+                                                    } else {
+                                                        time_str_raw.to_string()
+                                                    };
+                                                    format!("{} {}", trade_date, clean_time)
+                                                } else if !time_str_raw.is_empty() {
+                                                    // 兜底：如果拿不到交易日期，尝试使用今天
+                                                    let today = chrono::Local::now().format("%Y-%m-%d");
+                                                    let clean_time = if time_str_raw.len() >= 5 {
+                                                        time_str_raw[..5].to_string()
+                                                    } else {
+                                                        time_str_raw.to_string()
+                                                    };
+                                                    format!("{} {}", today, clean_time)
+                                                } else {
+                                                    continue; // 跳过无效数据
+                                                };
+
+                                                minute_data.push(MinuteDataPoint {
+                                                    time: full_time,
+                                                    price,
+                                                    avg_price,
+                                                    volume,
+                                                    open: price, 
+                                                    close: price,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    return Json(json!({
+                                        "status": "success",
+                                        "data": minute_data
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("Fetch minute data error: {}", e)
+        }
+    }
+    Json(json!({"status": "error", "msg": "fetch failed"}))
+}
+
+async fn get_stock_kline_data(
+    Query(params): Query<HashMap<String, String>>,
+    _state: State<AppState>,
+) -> Json<Value> {
+    if let Some(code) = params.get("code") {
+        let normalized_code = normalize_stock_code(code);
+        let default_type = "101".to_string(); // 修复：创建持久化的默认值
+        let ktype = params.get("type").unwrap_or(&default_type); // 修复：引用持久化变量
+
+        // 转换代码格式
+        let secid = if normalized_code.starts_with("sh") {
+            format!("1.{}", &normalized_code[2..])
+        } else if normalized_code.starts_with("sz") {
+            format!("0.{}", &normalized_code[2..])
+        } else if normalized_code.starts_with("bj") {
+            format!("0.{}", &normalized_code[2..])
+        } else {
+            format!("0.{}", normalized_code)
+        };
+
+        // klt: 1(分), 5(5分), 15(15分), 30(30分), 60(60分), 101(日), 102(周), 103(月)
+        let klt = match ktype.as_str() {
+            "kday" => "101",
+            "kweek" => "102",
+            "kmonth" => "103",
+            _ => "101",
+        };
+
+        let url = format!(
+            "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&beg=0&end=20500101&ut=fa5fd1943c7b386f172d6893dbfba10b&klt={}&fqt=1",
+            secid, klt
+        );
+
+        let client = reqwest::Client::builder()
+            .default_headers({
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert("User-Agent", reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
+                headers.insert("Referer", reqwest::header::HeaderValue::from_static("http://quote.eastmoney.com/"));
+                headers
+            })
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    if let Ok(root) = serde_json::from_str::<Value>(&text) {
+                        if let Some(data) = root.get("data") {
+                            if let Some(klines) = data.get("klines") {
+                                if let Some(arr) = klines.as_array() {
+                                    let mut kline_data: Vec<KLineDataPoint> = Vec::new();
+                                    for item in arr {
+                                        if let Some(s) = item.as_str() {
+                                            let parts: Vec<&str> = s.split(',').collect();
+                                            // 格式: 日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率
+                                            // f51:日期, f52:开盘, f53:收盘, f54:最高, f55:最低, f56:成交量(手), f57:成交额(元)
+                                            if parts.len() >= 7 {
+                                                let date = parts[0];
+                                                let open = parts[1].parse::<f64>().unwrap_or(0.0);
+                                                let close = parts[2].parse::<f64>().unwrap_or(0.0);
+                                                let high = parts[3].parse::<f64>().unwrap_or(0.0);
+                                                let low = parts[4].parse::<f64>().unwrap_or(0.0);
+                                                let volume = parts[5].parse::<f64>().unwrap_or(0.0);
+                                                let amount = parts[6].parse::<f64>().unwrap_or(0.0);
+
+                                                kline_data.push(KLineDataPoint {
+                                                    date: date.to_string(),
+                                                    open,
+                                                    high,
+                                                    low,
+                                                    close,
+                                                    volume,
+                                                    amount,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    return Json(json!({
+                                        "status": "success",
+                                        "data": kline_data
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("Fetch kline data error: {}", e)
+        }
+    }
+    Json(json!({"status": "error", "msg": "fetch failed"}))
+}
+
+fn parse_sina_data(text: &str) -> Vec<StockInfo> {
+    let mut result = Vec::new();
+    for cap in RE_SINA_DATA.captures_iter(text) {
+        let symbol = cap[1].to_string();
         let data_str = &cap[2];
+        let parts: Vec<&str> = data_str.split(',').collect();
         
-        // 处理可能的空数据或无效数据字符串
-        if data_str.is_empty() || data_str == "null" {
-            eprintln!("⚠️ Empty data for code: {}", code);
+        // 确保有足够的数据字段
+        if parts.len() < 32 {
             continue;
         }
 
-        let parts: Vec<&str> = data_str.split(',').collect();
-        
-        // 修复：增加边界检查，防止索引越界 Panic
-        // 新浪接口正常股票/指数数据通常至少有30+个字段，但最少需要前几个核心字段
-        if parts.len() < 6 { 
-            eprintln!("⚠️ Insufficient data fields for code {}: {} fields", code, parts.len());
-            continue; 
-        }
-
-        // 使用安全的解析方式，避免 unwrap 导致 panic
+        // 解析基本字段
         let name = parts[0].to_string();
         let open = parts[1].parse::<f64>().unwrap_or(0.0);
         let pre_close = parts[2].parse::<f64>().unwrap_or(0.0);
@@ -911,403 +1125,35 @@ fn parse_sina_data(raw_text: &str) -> Vec<StockInfo> {
         let high = parts[4].parse::<f64>().unwrap_or(0.0);
         let low = parts[5].parse::<f64>().unwrap_or(0.0);
         
-        // 成交量和成交额可能在后面，安全获取
-        let volume = if parts.len() > 9 { parts[8].parse::<f64>().unwrap_or(0.0) } else { 0.0 };
-        let amount = if parts.len() > 9 { parts[9].parse::<f64>().unwrap_or(0.0) } else { 0.0 };
-
-        let change = price - pre_close;
-        let change_percent = if pre_close > 0.0 { (change / pre_close) * 100.0 } else { 0.0 };
+        // 成交量(股) 和 成交额(元)
+        let volume_shares = parts[8].parse::<f64>().unwrap_or(0.0);
+        let amount = parts[9].parse::<f64>().unwrap_or(0.0);
         
-        // 计算涨跌停价 (简化处理，实际需根据板块判断)
+        // 转换成交量为手 (1手=100股)
+        let volume_hands = volume_shares / 100.0;
+
+        let change_percent = if pre_close > 0.0 { ((price - pre_close) / pre_close) * 100.0 } else { 0.0 };
+        
+        // 计算涨跌停价 (简化处理，实际应根据板块判断)
         let limit_up = pre_close * 1.1;
         let limit_down = pre_close * 0.9;
 
-        results.push(StockInfo {
-            symbol: code.to_string(),
+        result.push(StockInfo {
+            symbol,
             name,
             price,
             change_percent,
             high,
             low,
-            volume,
+            volume: volume_hands,
             open,
             pre_close,
-            amount,
             limit_up,
             limit_down,
-            pe_ratio: 0.0,
-            turnover_rate: 0.0,
+            amount,
+            turnover_rate: 0.0, // 新浪接口此位置可能不同，暂置0
+            pe_ratio: 0.0,      // 暂置0
         });
     }
-    results
-}
-
-// 新增：从东方财富获取分时数据
-async fn fetch_minute_data_from_eastmoney(normalized_code: &str) -> Option<Vec<MinuteDataPoint>> {
-    // 东方财富 secid 格式: 市场代码.股票代码
-    let secid = if normalized_code.starts_with("sh") {
-        format!("1.{}", &normalized_code[2..])
-    } else if normalized_code.starts_with("sz") {
-        format!("0.{}", &normalized_code[2..])
-    } else if normalized_code.starts_with("bj") {
-        format!("0.{}", &normalized_code[2..]) 
-    } else {
-        format!("0.{}", normalized_code)
-    };
-
-    // 接口说明：
-    // fields1: f1(f2?), f2... (通常不需要具体指定，默认即可)
-    // fields2: f51(时间), f52(开盘), f53(收盘), f54(最高), f55(最低), f56(成交量-手), f57(成交额-元), f58(均价?)
-    // 注意：东财分钟线接口返回的是累积成交量还是单分钟？通常是单分钟。
-    // URL: https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=1.600519&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&ndays=1
-    // ndays=1 表示获取当天数据
-    
-    // 修复：添加 ut 参数，这是东方财富接口必须的 token，否则可能返回空数据
-    let url = format!(
-        "https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&ndays=1&ut=b2884a393a59ad64002292a3e90d46a5",
-        secid
-    );
-
-    println!("🔍 Fetching Minute Data from EastMoney: {}", url);
-
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .default_headers({
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert("Referer", reqwest::header::HeaderValue::from_static("https://quote.eastmoney.com/"));
-            headers
-        })
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-
-    match client.get(&url).send().await {
-        Ok(resp) => {
-            if !resp.status().is_success() {
-                eprintln!("Fetch EastMoney Minute HTTP Error: {} for {}", resp.status(), normalized_code);
-                return None;
-            }
-
-            if let Ok(text) = resp.text().await {
-                // 调试日志
-                // eprintln!("Raw EastMoney Minute Response: {}", text.chars().take(200).collect::<String>());
-
-                if let Ok(root) = serde_json::from_str::<Value>(&text) {
-                    if let Some(data) = root.get("data") {
-                        if let Some(trends) = data.get("trends") {
-                            if let Some(arr) = trends.as_array() {
-                                let mut minutes: Vec<MinuteDataPoint> = Vec::new();
-
-                                for item in arr {
-                                    if let Some(line_str) = item.as_str() {
-                                        // 格式: "2023-10-27 09:30,10.00,10.00,10.00,10.00,100,1000000.00,10.00"
-                                        // f51:时间, f52:开盘, f53:收盘, f54:最高, f55:最低, f56:成交量(手), f57:成交额(元), f58:均价(可能是累计均价)
-                                        let parts: Vec<&str> = line_str.split(',').collect();
-                                        if parts.len() >= 8 {
-                                            let time_raw = parts[0];
-                                            // 时间格式转换: "2023-10-27 09:30" -> "YYYY-MM-DD HH:MM"
-                                            // Lightweight Charts 需要标准时间格式
-                                            let time_str = time_raw.to_string();
-                                            
-                                            let open = parts[1].parse::<f64>().unwrap_or(0.0);
-                                            let close = parts[2].parse::<f64>().unwrap_or(0.0);
-                                            let volume = parts[5].parse::<f64>().unwrap_or(0.0); // 手
-                                            let avg_price = parts[7].parse::<f64>().unwrap_or(0.0); // 东财返回的均价
-
-                                            // 过滤无效数据
-                                            if close <= 0.0 {
-                                                continue;
-                                            }
-
-                                            minutes.push(MinuteDataPoint {
-                                                time: time_str,
-                                                price: close,
-                                                avg_price: if avg_price > 0.0 { avg_price } else { close },
-                                                volume: volume,
-                                                open: open,
-                                                close: close,
-                                            });
-                                        }
-                                    }
-                                }
-                                
-                                if minutes.is_empty() {
-                                    eprintln!("⚠️ No valid minute data points parsed for {} from EastMoney", normalized_code);
-                                    return None;
-                                }
-                                
-                                println!("✅ Successfully parsed {} minute data points for {} from EastMoney", minutes.len(), normalized_code);
-                                return Some(minutes);
-                            }
-                        }
-                    }
-                }
-                eprintln!("Parse EastMoney Minute JSON Error for {}", normalized_code);
-            }
-        }
-        Err(e) => {
-            eprintln!("Fetch EastMoney Minute Network Error for {}: {}", normalized_code, e);
-        }
-    }
-    None
-}
-
-// 新增：获取分时历史数据
-async fn get_stock_minute_data(
-    Query(params): Query<HashMap<String, String>>,
-    _state: State<AppState>,
-) -> Json<Value> {
-    if let Some(code) = params.get("code") {
-        let normalized_code = normalize_stock_code(code);
-        
-        // 1. 优先使用东方财富接口获取当天分时数据
-        if let Some(data) = fetch_minute_data_from_eastmoney(&normalized_code).await {
-            if !data.is_empty() {
-                println!("Fetched {} minute data points for {} (EastMoney)", data.len(), normalized_code);
-                return Json(json!({
-                    "status": "success",
-                    "data": data
-                }));
-            }
-        }
-
-        // 2. 如果东财失败，可以尝试降级方案（此处暂略，直接返回空）
-        // 以前是尝试获取历史数据，但分时图通常只看当天。
-        // 如果当天无数据（非交易时间），东财接口可能返回空或最后交易日数据，视接口行为而定。
-        // 如果需要展示最近交易日，逻辑会更复杂，这里保持简洁。
-
-        println!("No minute data available for {}", normalized_code);
-        // 返回空数组，前端将显示“暂无数据”
-        return Json(json!({"status": "success", "data": []}));
-    }
-    Json(json!({"status": "error", "msg": "no code provided"}))
-}
-
-// 新增：从东方财富获取K线数据 (替代新浪财经，解决新浪返回null问题)
-async fn fetch_kline_data_from_eastmoney(normalized_code: &str, klt: &str, lmt: usize) -> Option<Vec<KLineDataPoint>> {
-    // 东方财富 secid 格式: 市场代码.股票代码
-    // 1: 上海 (sh), 0: 深圳 (sz), 0: 北交所 (bj - 通常也归为0或特定，这里简化处理)
-    let secid = if normalized_code.starts_with("sh") {
-        format!("1.{}", &normalized_code[2..])
-    } else if normalized_code.starts_with("sz") {
-        format!("0.{}", &normalized_code[2..])
-    } else if normalized_code.starts_with("bj") {
-        format!("0.{}", &normalized_code[2..]) 
-    } else {
-        format!("0.{}", normalized_code)
-    };
-
-    // klt 映射: 101(日K)->101, 102(周K)->102, 103(月K)->103 (东财参数与新浪类似，但更稳定)
-    // 注意：东财接口 fields 需要指定返回字段
-    // f51:日期, f52:开盘, f53:收盘, f54:最高, f55:最低, f56:成交量, f57:成交额, f58:振幅, f59:涨跌幅, f60:涨跌额, f61:换手率
-    
-    // 构建 URL，使用标准的东方财富 K 线接口
-    // fqt=1: 前复权 (qfq), fqt=0: 不复权, fqt=2: 后复权
-    let url = format!(
-        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={}&fqt=1&beg=0&end=20500101&lmt={}",
-        secid, klt, lmt
-    );
-
-    println!("🔍 Fetching K-line from EastMoney: {}", url); 
-
-    // 修复：构建更健壮的 Client，解决 IncompleteMessage 错误
-    // 1. 禁用连接池重用，避免服务器端关闭连接导致的后续请求错误
-    // 2. 明确允许 HTTP/2，因为现代 CDN 往往优先使用 HTTP/2
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .pool_max_idle_per_host(0) // 禁用连接池重用，每次新建连接，避免 stale connection
-        .danger_accept_invalid_certs(false) // 生产环境应保持 false，除非调试自签名证书
-        .default_headers({
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert("Referer", reqwest::header::HeaderValue::from_static("https://quote.eastmoney.com/"));
-            headers.insert("Accept", reqwest::header::HeaderValue::from_static("application/json, text/plain, */*"));
-            headers.insert("Accept-Language", reqwest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
-            headers
-        })
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-
-    // 增加重试逻辑，应对偶尔的网络抖动
-    let mut retries = 2;
-    loop {
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    eprintln!("Fetch EastMoney KLine HTTP Error: {} for {}", resp.status(), normalized_code);
-                    // HTTP 错误通常重试无效，除非是 5xx
-                    if resp.status().is_server_error() && retries > 0 {
-                        retries -= 1;
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        continue;
-                    }
-                    return None;
-                }
-
-                if let Ok(text) = resp.text().await {
-                    // 调试日志
-                    // println!("📄 Raw EastMoney KLine Response (first 200 chars): {}", text.chars().take(200).collect::<String>());
-
-                    if text.contains("\"data\":null") || text.contains("\"code\":1") {
-                         eprintln!("⚠️ EastMoney KLine returned error or null for {}", normalized_code);
-                         return None;
-                    }
-
-                    // 解析 JSON
-                    if let Ok(root) = serde_json::from_str::<Value>(&text) {
-                        if let Some(data) = root.get("data") {
-                            if let Some(klines) = data.get("klines") {
-                                if let Some(arr) = klines.as_array() {
-                                    let mut result: Vec<KLineDataPoint> = Vec::new();
-                                    
-                                    for item in arr {
-                                        if let Some(line_str) = item.as_str() {
-                                            // 东财返回格式: "2023-10-27,10.00,10.20,10.50,9.80,12345,1234567.00,..."
-                                            // 对应 fields2: f51(日期), f52(开盘), f53(收盘), f54(最高), f55(最低), f56(成交量), f57(成交额)
-                                            let parts: Vec<&str> = line_str.split(',').collect();
-                                            if parts.len() >= 7 {
-                                                let date = parts[0].to_string();
-                                                let open = parts[1].parse::<f64>().unwrap_or(0.0);
-                                                let close = parts[2].parse::<f64>().unwrap_or(0.0);
-                                                let high = parts[3].parse::<f64>().unwrap_or(0.0);
-                                                let low = parts[4].parse::<f64>().unwrap_or(0.0);
-                                                let volume = parts[5].parse::<f64>().unwrap_or(0.0); // 手
-                                                let amount = parts[6].parse::<f64>().unwrap_or(0.0); // 元
-
-                                                if close > 0.0 {
-                                                    result.push(KLineDataPoint {
-                                                        date,
-                                                        open,
-                                                        high,
-                                                        low,
-                                                        close,
-                                                        volume,
-                                                        amount,
-                                                    });
-                                                }
-                                            }
-                                        }
-                                    }
-                                    
-                                    if result.is_empty() {
-                                        eprintln!("⚠️ No valid K-line data points parsed for {}", normalized_code);
-                                        return None;
-                                    }
-                                    
-                                    println!("✅ Returning {} valid K-line data points for {} from EastMoney", result.len(), normalized_code);
-                                    return Some(result);
-                                }
-                            }
-                        }
-                    } else {
-                        eprintln!("Parse EastMoney KLine JSON Error for {}", normalized_code);
-                        // 解析错误重试通常无效
-                        return None;
-                    }
-                } else {
-                    eprintln!("Failed to read response text for {}", normalized_code);
-                    return None;
-                }
-            }
-            Err(e) => {
-                // 打印更详细的错误信息，帮助判断是 DNS、TLS 还是连接重置
-                eprintln!("Fetch EastMoney KLine Network Error (Attempt {}): {:?} for {}", 3 - retries, e, normalized_code);
-                if retries > 0 {
-                    retries -= 1;
-                    // 短暂等待后重试
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    continue;
-                } else {
-                    return None;
-                }
-            }
-        }
-    }
-}
-
-// 新增：K线数据缓存结构
-// Key: "symbol_type" (e.g., "sh600519_101"), Value: Vec<KLineDataPoint>
-static KLINE_CACHE: LazyLock<Mutex<HashMap<String, Vec<KLineDataPoint>>>> = 
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-// 新增：从东方财富获取K线数据 (带缓存)
-async fn fetch_kline_data_from_eastmoney_cached(normalized_code: &str, klt: &str, lmt: usize) -> Option<Vec<KLineDataPoint>> {
-    let cache_key = format!("{}_{}", normalized_code, klt);
-    
-    // 1. 尝试从缓存读取
-    {
-        let cache = KLINE_CACHE.lock().await;
-        if let Some(data) = cache.get(&cache_key) {
-            println!("✅ Cache hit for K-line: {}", cache_key);
-            return Some(data.clone());
-        }
-    }
-
-    // 2. 缓存未命中，请求网络
-    println!("🔍 Cache miss, fetching from EastMoney: {}", cache_key);
-    if let Some(data) = fetch_kline_data_from_eastmoney(normalized_code, klt, lmt).await {
-        // 3. 写入缓存
-        let mut cache = KLINE_CACHE.lock().await;
-        cache.insert(cache_key, data.clone());
-        return Some(data);
-    }
-    
-    None
-}
-
-// 修改：获取K线数据接口，使用缓存版本
-async fn get_stock_kline_data(
-    Query(params): Query<HashMap<String, String>>,
-    _state: State<AppState>,
-) -> Json<Value> {
-    if let Some(code) = params.get("code") {
-        let normalized_code = normalize_stock_code(code);
-        let ktype = params.get("type").map(|s| s.as_str()).unwrap_or("kday");
-        
-        let klt = match ktype {
-            "kweek" => "102",
-            "kmonth" => "103",
-            _ => "101",
-        };
-        
-        // 增加获取数量以支持缩放，例如获取 500 条
-        let limit = 500; 
-
-        // 调用带缓存的获取函数
-        if let Some(data) = fetch_kline_data_from_eastmoney_cached(&normalized_code, klt, limit).await {
-            return Json(json!({
-                "status": "success",
-                "data": data
-            }));
-        }
-    }
-    Json(json!({"status": "error", "msg": "fetch failed or no data"}))
-}
-
-#[axum::debug_handler]
-async fn remove_index(
-    State(state): State<AppState>,
-    Json(payload): Json<Value>,
-) -> Json<Value> {
-    if let Some(code) = payload.get("code").and_then(|c| c.as_str()) {
-        let normalized_code = normalize_stock_code(code);
-        let mut list = state.index_list.write().await;
-        if let Some(pos) = list.iter().position(|x| x == &normalized_code) {
-            list.remove(pos);
-            println!("✅ Backend: Removed index {}", normalized_code);
-            
-            // 保存配置
-            let stocks = state.stock_list.read().await.clone();
-            let indices = list.clone();
-            let data_interval = state.refresh_interval.read().await.clone();
-            let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
-            drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks, data_interval, page_interval);
-            
-            state.data_refresh_notify.notify_one();
-            return Json(json!({"status": "success", "msg": "removed"}));
-        }
-        return Json(json!({"status": "error", "msg": "not found"}));
-    }
-    Json(json!({"status": "error", "msg": "invalid payload"}))
+    result
 }

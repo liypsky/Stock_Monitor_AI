@@ -1142,7 +1142,7 @@
             }
 
             try {
-                // 获取分时数据
+                // 获取分时数据 (获取1分钟原始数据以便前端聚合)
                 const res = await fetch(`/api/stock_minute_data?code=${currentDetailSymbol}&datalen=240`);
                 const result = await res.json();
                 
@@ -1161,25 +1161,67 @@
                         preClose = result.data[0].open || result.data[0].price || 0;
                     }
 
-                    result.data.forEach((item) => {
+                    // --- 新增：前端重采样为5分钟数据 ---
+                    const rawData = result.data;
+                    const sampledData = [];
+                    
+                    // 遍历原始1分钟数据，每5个点聚合为一个5分钟点
+                    for (let i = 0; i < rawData.length; i += 5) {
+                        // 获取当前5分钟窗口的数据块
+                        const chunk = rawData.slice(i, i + 5);
+                        if (chunk.length === 0) continue;
+
+                        // 取窗口内最后一个有效价格作为当前5分钟点的价格
+                        // 也可以取平均值，但看盘习惯通常取收盘价(即窗口最后时刻价格)
+                        const lastItem = chunk[chunk.length - 1];
+                        
+                        // 聚合成交量
+                        let totalVol = 0;
+                        chunk.forEach(item => {
+                            totalVol += (item.volume || 0);
+                        });
+
+                        // 构建新数据点
+                        sampledData.push({
+                            time: lastItem.time, // 后端已返回完整时间格式 "YYYY-MM-DD HH:mm:ss"
+                            price: lastItem.close || lastItem.price || lastItem.open,
+                            avg_price: lastItem.avg_price,
+                            volume: totalVol,
+                            open: chunk[0].open || chunk[0].price,
+                            close: lastItem.close || lastItem.price
+                        });
+                    }
+
+                    // 使用采样后的数据进行后续处理
+                    sampledData.forEach((item) => {
                         if (!item.time) return;
 
                         let closePrice = item.close;
                         if (!closePrice || closePrice <= 0) closePrice = item.price;
                         if (!closePrice || closePrice <= 0) closePrice = item.open;
 
-
-
-                        
                         if (!closePrice || closePrice <= 0) return;
 
-                        // 标准化时间格式：确保包含日期部分，Lightweight Charts v4 需要完整的时间字符串
-                        // 假设后端返回 "YYYY-MM-DD HH:mm" 或 "HH:mm"
+                        // 修复：后端已返回标准格式 "YYYY-MM-DD HH:mm"，直接使用并做简单校验
                         let timeStr = item.time.trim();
-                        if (timeStr.length === 5) {
-                            // 如果只有 HH:mm，补充当天日期
-                            const today = new Date().toISOString().split('T')[0];
-                            timeStr = `${today} ${timeStr}`;
+                        
+                        // 简单校验格式，防止非法数据导致图表崩溃
+                        // 期望格式: YYYY-MM-DD HH:mm
+                        if (!/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/.test(timeStr)) {
+                             console.warn("Invalid time format from backend:", timeStr);
+                             // 尝试简单修复：如果包含多余部分，截取前16位 (YYYY-MM-DD HH:mm)
+                             // 例如: "2026-05-11 09:30:00" -> "2026-05-11 09:30"
+                             // 例如: "2026-05-11 2026-..." (错误拼接) -> 这种很难修复，直接跳过或尝试提取
+                             
+                             // 更稳健的修复：尝试匹配第一个完整的 YYYY-MM-DD HH:mm
+                             const match = timeStr.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})/);
+                             if (match) {
+                                 timeStr = `${match[1]} ${match[2]}`;
+                             } else {
+                                 // 无法修复则跳过
+                                 console.error("Unfixable time string:", timeStr);
+                                 return;
+                             }
                         }
 
                         let vol = item.volume || 0;
@@ -1196,6 +1238,7 @@
                             color: isUp ? '#f43f3e' : '#00b42a'
                         });
                     });
+                    // --- 重采样结束 ---
                 }
 
                 if (lineData.length === 0) {
@@ -1251,8 +1294,8 @@
                         visible: true,
                         timeVisible: true,
                         secondsVisible: false,
-                        fixLeftEdge: true,
-                        fixRightEdge: true,
+                        fixLeftEdge: false, // 修改：不固定左边缘，允许滚动
+                        fixRightEdge: false, // 修改：不固定右边缘
                     },
                 });
 
@@ -1329,8 +1372,12 @@
                 });
 
                 // 确保时间轴内容完全显示
+                // 修改：使用 fitContent 确保所有数据点都可见，而不是只显示最后一个
                 dayPriceChart.timeScale().fitContent();
                 dayVolumeChart.timeScale().fitContent();
+                
+                // 新增：如果数据点很多，fitContent 可能会缩得很小，可以设置一个最小的可见范围
+                // 但通常 fitContent 是最安全的初始状态
             } catch (error) {
                 console.error("Error rendering day chart:", error);
                 priceContainer.innerText = "图表渲染错误: " + error.message;
