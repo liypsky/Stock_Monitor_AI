@@ -8,31 +8,64 @@
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
     
     <style>
-        :root { --primary: #d81e06; --bg: #f5f5f5; --card: #fff; --up: #f43f3e; --down: #00b42a; }
-        body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #333; user-select: none; }
+        :root { 
+            --primary: #d81e06; 
+            --bg: #f5f5f5; 
+            --card: #fff; 
+            --up: #f43f3e; 
+            --down: #00b42a; 
+            --text-main: #333;
+            --text-sub: #666;
+            --border-color: #eee;
+            
+            /* 响应式字体基础变量 */
+            --font-size-base: clamp(14px, 1vw + 12px, 16px);
+            --font-size-sm: clamp(12px, 0.8vw + 10px, 14px);
+            --font-size-lg: clamp(16px, 1.2vw + 14px, 18px);
+            --font-size-xl: clamp(20px, 2vw + 16px, 24px);
+        }
+
+        /* 全局重置与基础样式 */
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif; 
+            background: var(--bg); 
+            margin: 0; 
+            padding: 20px; 
+            color: var(--text-main); 
+            user-select: none; 
+            font-size: var(--font-size-base);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased; /* macOS 字体平滑 */
+            -moz-osx-font-smoothing: grayscale;
+        }
+
         .container { max-width: 1200px; margin: 0 auto; }
         
         .section-header { display: flex; justify-content: space-between; align-items: center; margin: 20px 0 10px 0; }
-        .section-title { font-size: 1.1em; font-weight: bold; border-left: 4px solid var(--primary); padding-left: 10px; }
+        .section-title { font-size: var(--font-size-lg); font-weight: bold; border-left: 4px solid var(--primary); padding-left: 10px; }
+        
+        /* 指数看板优化 */
         .index-board { display: flex; gap: 15px; margin-bottom: 20px; overflow-x: auto; padding-bottom: 5px; }
         .index-card { flex: 1; min-width: 140px; background: var(--card); padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: center; transition: transform 0.2s; position: relative; }
         .index-card:hover { transform: translateY(-2px); }
-        .index-name { font-size: 0.9em; color: #666; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .index-price { font-size: 1.4em; font-weight: bold; }
-        .index-change { font-size: 0.9em; margin-top: 5px; }
+        .index-name { font-size: var(--font-size-sm); color: var(--text-sub); margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .index-price { font-size: var(--font-size-xl); font-weight: bold; line-height: 1.2; }
+        .index-change { font-size: var(--font-size-sm); margin-top: 5px; }
         
-        .controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .input-group { display: flex; gap: 10px; }
-        input { padding: 8px; border: 1px solid #ddd; border-radius: 4px; width: 150px; }
-        .btn { padding: 8px 16px; background: var(--primary); color: white; border: none; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; }
+        /* 控制区优化 */
+        .controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); flex-wrap: wrap; gap: 10px; }
+        .input-group { display: flex; gap: 10px; align-items: center; }
+        input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; width: 150px; font-size: var(--font-size-base); transition: border-color 0.2s; }
+        input:focus { border-color: var(--primary); outline: none; }
+        .btn { padding: 8px 16px; background: var(--primary); color: white; border: none; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; font-size: var(--font-size-base); }
         .btn:hover { opacity: 0.9; }
         .btn-secondary { background: #64748b; }
-        .btn-small { padding: 4px 8px; font-size: 12px; margin-right: 5px; }
-        .btn-ai { background: #7c3aed; }
+        .btn-small { padding: 4px 8px; font-size: 12px; margin-right: 5px; background: #e2e8f0; color: #475569; }
 
+        /* 表格优化 */
         table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 8px; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; }
-        th { background: #fafafa; cursor: pointer; user-select: none; font-weight: 600; color: #475569; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: var(--font-size-base); }
+        th { background: #fafafa; cursor: pointer; user-select: none; font-weight: 600; color: #475569; white-space: nowrap; }
         th:hover { background: #f1f5f9; }
         .up { color: var(--up); } .down { color: var(--down); }
         
@@ -48,84 +81,84 @@
             background: #fff;
             border: 1px solid #ddd;
             border-radius: 4px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
             padding: 5px 0;
             min-width: 120px;
+            font-size: var(--font-size-base);
         }
         #context-menu div {
             padding: 8px 15px;
             cursor: pointer;
-            font-size: 14px;
         }
         #context-menu div:hover { background: #f5f5f5; color: var(--primary); }
         #context-menu .divider { height: 1px; background: #eee; margin: 5px 0; padding: 0; }
 
-        #detail-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; justify-content: center; align-items: center; }
-        .detail-content { background: #fff; width: 90%; max-width: 900px; padding: 20px; border-radius: 8px; position: relative; max-height: 90vh; overflow-y: auto; }
-        .close-btn { position: absolute; top: 10px; right: 15px; font-size: 24px; cursor: pointer; color: #666; }
-        .chart-tabs { display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
-        .chart-tab { padding: 5px 15px; cursor: pointer; border-radius: 4px; }
+        /* 详情弹窗优化 */
+        #detail-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 100; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
+        .detail-content { background: #fff; width: 90%; max-width: 900px; padding: 25px; border-radius: 12px; position: relative; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
+        .close-btn { position: absolute; top: 15px; right: 20px; font-size: 28px; cursor: pointer; color: #999; line-height: 1; transition: color 0.2s; }
+        .close-btn:hover { color: #333; }
+        
+        .chart-tabs { display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; flex-wrap: wrap; }
+        .chart-tab { padding: 6px 16px; cursor: pointer; border-radius: 4px; font-size: var(--font-size-sm); transition: all 0.2s; }
+        .chart-tab:hover { background: #f1f5f9; }
         .chart-tab.active { background: var(--primary); color: white; }
+        
         .chart-container { height: 400px; margin-top: 20px; display: flex; flex-direction: column; gap: 5px; }
-        /* 新增：分时图上下布局样式 */
         .chart-wrapper { position: relative; width: 100%; height: 100%; overflow: hidden; }
         #chart-container-day .chart-wrapper:first-child { height: 300px; }
         #chart-container-day .chart-wrapper:last-child { height: 100px; }
         #chart-container-k .chart-wrapper:first-child { height: 300px; }
         #chart-container-k .chart-wrapper:last-child { height: 100px; }
         
-        /* 新增：确保图表内部 div 填满 wrapper */
         #chart-price-div, #chart-volume-div, #chart-k-price-div, #chart-k-volume-div {
             width: 100%;
             height: 100%;
         }
         
-        #index-input-area { display: none; margin-bottom: 15px; background:#fff; padding:10px; border-radius:8px; border: 1px solid #eee; }
+        #index-input-area { display: none; margin-bottom: 15px; background:#fff; padding:15px; border-radius:8px; border: 1px solid #eee; }
         .loading-text { color: #999; font-style: italic; }
         
         /* AI 分析弹窗 */
-        #ai-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 101; justify-content: center; align-items: center; }
-        .ai-content { background: #fff; width: 90%; max-width: 600px; padding: 20px; border-radius: 8px; position: relative; }
+        #ai-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 101; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
+        .ai-content { background: #fff; width: 90%; max-width: 600px; padding: 25px; border-radius: 12px; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
 
         /* 详情页增强样式 */
-        .detail-header-info { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
-        .dh-left h2 { margin: 0; font-size: 1.5em; }
-        .dh-left span { color: #666; font-size: 0.9em; }
+        .detail-header-info { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 15px; }
+        .dh-left h2 { margin: 0; font-size: var(--font-size-xl); font-weight: bold; }
+        .dh-left span { color: var(--text-sub); font-size: var(--font-size-sm); margin-top: 4px; display: block; }
         .dh-right { text-align: right; }
-        .dh-price { font-size: 1.8em; font-weight: bold; }
-        .dh-change { font-size: 1.1em; }
+        .dh-price { font-size: clamp(24px, 3vw, 32px); font-weight: bold; line-height: 1; }
+        .dh-change { font-size: var(--font-size-lg); margin-top: 5px; }
         
-        .detail-stats-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 20px; background: #f9fafb; padding: 10px; border-radius: 6px; }
+        .detail-stats-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 15px; margin-bottom: 20px; background: #f9fafb; padding: 15px; border-radius: 8px; }
         .stat-item { text-align: center; }
-        .stat-label { font-size: 0.8em; color: #888; margin-bottom: 2px; }
-        .stat-value { font-weight: 600; font-size: 0.95em; }
+        .stat-label { font-size: 12px; color: #888; margin-bottom: 4px; }
+        .stat-value { font-weight: 600; font-size: var(--font-size-base); }
 
         .money-flow-container { margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px; }
-        .mf-title { font-size: 1em; font-weight: bold; margin-bottom: 10px; }
-        /* 修改：资金流向改为水平布局 */
+        .mf-title { font-size: var(--font-size-base); font-weight: bold; margin-bottom: 10px; }
         .mf-bars { 
             display: flex; 
-            flex-direction: row; /* 改为水平排列 */
-            gap: 15px; /* 间距 */
-            overflow-x: auto; /* 允许横向滚动以防过窄 */
-            padding-bottom: 5px; /* 滚动条空间 */
+            flex-direction: row; 
+            gap: 15px; 
+            overflow-x: auto; 
+            padding-bottom: 5px; 
             align-items: center;
         }
         .mf-row { 
             display: flex; 
-            flex-direction: column; /* 每个项目内部垂直排列：标签在上，图在中，值在下 */
+            flex-direction: column; 
             align-items: center;
-            min-width: 80px; /* 最小宽度 */
-            flex: 1; /* 平均分配空间 */
-            font-size: 0.8em; 
+            min-width: 80px; 
+            flex: 1; 
+            font-size: 12px; 
         }
-        /* 删除: .mf-label { width: 60px; color: #666; } */
         .mf-label { 
             color: #666; 
             margin-bottom: 4px; 
             white-space: nowrap;
         }
-        /* 删除: .mf-bar-bg { flex: 1; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; position: relative; margin: 0 10px; } */
         .mf-bar-bg { 
             width: 100%; 
             height: 6px; 
@@ -136,16 +169,15 @@
             margin: 2px 0; 
         }
         .mf-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
-        /* Delete: .mf-val { width: 80px; text-align: right; font-family: monospace; } */
         .mf-val { 
             text-align: center; 
             font-family: monospace; 
-            font-size: 0.9em;
+            font-size: 12px;
             margin-top: 2px;
         }
         .mf-center-line { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #ccc; z-index: 1; }
         
-        /* 新增：K线图 Tooltip 样式 */
+        /* K线图 Tooltip 样式 */
         #k-tooltip {
             display: none;
             position: absolute;
@@ -155,9 +187,9 @@
             border-radius: 4px;
             padding: 8px 12px;
             font-size: 12px;
-            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            font-family: inherit;
             box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-            pointer-events: none; /* 防止遮挡鼠标交互 */
+            pointer-events: none; 
             white-space: nowrap;
             line-height: 1.6;
         }
@@ -166,14 +198,24 @@
         .tooltip-val { font-weight: bold; color: #333; }
         .tooltip-date { border-bottom: 1px solid #eee; margin-bottom: 4px; padding-bottom: 2px; font-weight: bold; color: #333; }
         
-        /* 修复：将误写在 style 标签外的阴影样式移回，并应用到容器 */
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            background: #fff; /* 确保有背景色以便阴影可见 */
-            padding: 20px;    /* 保持内边距 */
-            border-radius: 8px; /* 圆角配合阴影更美观 */
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1); /* 修正后的阴影值 */
+            background: #fff; 
+            padding: 20px;    
+            border-radius: 8px; 
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1); 
+        }
+
+        /* 移动端适配微调 */
+        @media (max-width: 768px) {
+            body { padding: 10px; }
+            .controls { flex-direction: column; align-items: stretch; }
+            .input-group { flex-wrap: wrap; }
+            input { width: 100%; box-sizing: border-box; }
+            .detail-stats-grid { grid-template-columns: repeat(3, 1fr); }
+            .index-board { gap: 10px; }
+            .index-card { min-width: 120px; padding: 10px; }
         }
     </style>
 </head>
@@ -570,8 +612,9 @@
                     const isLoading = !isDataInitialized;
                     const statusText = isLoading ? '加载中...' : '无数据';
                     const statusClass = 'loading-text';
+                    const displayCode = item.code.length > 2 ? item.code.substring(2) : item.code;
                     tr.innerHTML = `
-                        <td>${item.code}</td>
+                        <td>${displayCode}</td>
                         <td class="${statusClass}">${item.code}</td>
                         <td class="${statusClass}">--</td>
                         <td class="${statusClass}">--</td>
@@ -584,8 +627,9 @@
                     const s = item.data;
                     const colorClass = s.change_percent >= 0 ? 'up' : 'down';
                     const sign = s.change_percent >= 0 ? '+' : '';
+                    const displaySymbol = s.symbol.length > 2 ? s.symbol.substring(2) : s.symbol;
                     tr.innerHTML = `
-                        <td>${s.symbol}</td>
+                        <td>${displaySymbol}</td>
                         <td>${s.name}</td>
                         <td class="${colorClass}" style="font-weight:bold;">${s.price.toFixed(2)}</td>
                         <td class="${colorClass}">${sign}${s.change_percent.toFixed(2)}%</td>
@@ -593,7 +637,7 @@
                         <td>${s.low.toFixed(2)}</td>
                         <td>${(s.volume/100000000).toFixed(2)}亿</td>
                         <td>
-                            <button class="btn btn-small" onclick="showDetail('${s.symbol}', '${s.name}')">详情</button>
+                            <button class="btn btn-small" onclick="showDetail('${s.symbol}', '${s.name}')">详&nbsp;&nbsp;情</button>
                             <button class="btn btn-small btn-ai" onclick="showAiAnalysis('${s.symbol}', '${s.name}')">AI 分析</button>
                         </td>
                     `;
@@ -1675,7 +1719,27 @@
                     }
 
                     // 构建 Tooltip 内容
-                    const dateStr = param.time; // YYYY-MM-DD
+                    // 修改：格式化日期为 "2026年5月8日" 样式
+                    const dateObj = new Date(param.time);
+                    // 处理时区问题，确保显示的是交易日期而非本地时间转换后的日期（lightweight-charts 传入的 time 字符串通常代表当天零点 UTC 或本地时间，视配置而定，这里按字符串解析更稳妥）
+                    // 由于 lightweight-charts v3/v4 传入 crosshair 的 time 可能是 string "YYYY-MM-DD" 或 timestamp
+                    let dateStr = param.time;
+                    if (typeof param.time === 'string') {
+                        const parts = param.time.split('-');
+                        if (parts.length === 3) {
+                            // 去除前导零以符合“5月”而非“05月”的习惯，如果需要“05月”可保留
+                            const y = parts[0];
+                            const m = parseInt(parts[1], 10);
+                            const d = parseInt(parts[2], 10);
+                            dateStr = `${y}年${m}月${d}日`;
+                        }
+                    } else {
+                        // 如果是时间戳，按本地时间格式化
+                        const y = dateObj.getFullYear();
+                        const m = dateObj.getMonth() + 1;
+                        const d = dateObj.getDate();
+                        dateStr = `${y}年${m}月${d}日`;
+                    }
                     
                     // 格式化数值
                     const fmt = (num) => num.toFixed(2);
@@ -1693,6 +1757,7 @@
                         maHtml += `<div class="tooltip-row"><span class="tooltip-label" style="color:${item.color}">MA${item.period}</span><span class="tooltip-val">${maVal}</span></div>`;
                     });
 
+                    // 修改：确保 Tooltip 结构清晰，包含所有要求字段
                     tooltipElement.innerHTML = `
                         <div class="tooltip-date">${dateStr}</div>
                         <div class="tooltip-row"><span class="tooltip-label">开盘:</span><span class="tooltip-val">${open}</span></div>

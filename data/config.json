@@ -8,12 +8,12 @@
     "sh000852"
   ],
   "stocks": [
-    "sh601318",
     "sh600519",
+    "sh688052",
     "sz002916",
-    "sz300124",
     "bj920068",
-    "sh688052"
+    "sh601318",
+    "sz300124"
   ],
   "data_fetch_interval": 10,
   "page_refresh_interval": 3
