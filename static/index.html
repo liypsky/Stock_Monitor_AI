@@ -628,6 +628,20 @@
                     const colorClass = s.change_percent >= 0 ? 'up' : 'down';
                     const sign = s.change_percent >= 0 ? '+' : '';
                     const displaySymbol = s.symbol.length > 2 ? s.symbol.substring(2) : s.symbol;
+                    
+                    // 新增：格式化成交额函数
+                    const formatAmount = (amt) => {
+                        if (!amt || amt === 0) return '--';
+                        if (amt >= 100000000) {
+                            return (amt / 100000000).toFixed(2) + '亿';
+                        } else if (amt >= 10000000) {
+                            return (amt / 10000000).toFixed(2) + '千万';
+                        } else if (amt >= 10000) {
+                            return (amt / 10000).toFixed(2) + '万';
+                        }
+                        return amt.toFixed(0);
+                    };
+
                     tr.innerHTML = `
                         <td>${displaySymbol}</td>
                         <td>${s.name}</td>
@@ -635,7 +649,7 @@
                         <td class="${colorClass}">${sign}${s.change_percent.toFixed(2)}%</td>
                         <td>${s.high.toFixed(2)}</td>
                         <td>${s.low.toFixed(2)}</td>
-                        <td>${(s.volume/100000000).toFixed(2)}亿</td>
+                        <td>${formatAmount(s.amount)}</td>
                         <td>
                             <button class="btn btn-small" onclick="showDetail('${s.symbol}', '${s.name}')">详&nbsp;&nbsp;情</button>
                             <button class="btn btn-small btn-ai" onclick="showAiAnalysis('${s.symbol}', '${s.name}')">AI 分析</button>
