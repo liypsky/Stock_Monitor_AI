@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>A股实时监控中心</title>
-    <!-- 1. Lightweight Charts (更新为明确的 v4.1.0 版本，确保 API 一致性) -->
-    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <title>大A监控中心</title>
+    <!-- 1. Lightweight Charts (回退至 v3.8.0 稳定版) -->
+    <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
     
     <style>
         :root { --primary: #d81e06; --bg: #f5f5f5; --card: #fff; --up: #f43f3e; --down: #00b42a; }
@@ -1095,40 +1095,38 @@
             const vWidth = volumeContainer.clientWidth;
             const vHeight = volumeContainer.clientHeight;
 
-            console.log(`Chart container size: Price(${pWidth}x${pHeight}), Volume(${vWidth}x${vHeight})`);
+            console.log(`[DayChart] Container size check: Price(${pWidth}x${pHeight}), Volume(${vWidth}x${vHeight})`);
 
-            // 优化：如果尺寸为0，使用 ResizeObserver 等待容器获得有效尺寸
+            // 优化：如果尺寸为0，使用更稳健的等待逻辑
             if (pWidth === 0 || pHeight === 0 || vWidth === 0 || vHeight === 0) {
-                console.warn(`Chart container size is 0, waiting for ResizeObserver...`);
-                
-                const observer = new ResizeObserver(entries => {
-                    for (let entry of entries) {
-                        const { width, height } = entry.contentRect;
-                        if (width > 0 && height > 0) {
-                            observer.disconnect();
-                            console.log("Chart container resized, rendering now...");
-                            renderDayChart();
-                            break;
-                        }
-                    }
-                });
+                console.warn(`[DayChart] Container size is 0, attempting to wait for layout...`);
 
-                const parentWrapper = priceContainer.parentElement;
-                if (parentWrapper) {
-                    observer.observe(parentWrapper);
-                } else {
-                    observer.observe(priceContainer);
-                }
-                
-                setTimeout(() => {
-                    observer.disconnect();
-                    if (priceContainer.clientWidth === 0 || priceContainer.clientHeight === 0) {
-                         // 修改：不再显示错误文本，而是尝试再次渲染或保持空白，避免破坏布局
-                         console.error("Chart container remains 0 size after timeout");
-                         // 可以选择再次调用 renderDayChart 或者保持空白
-                    }
-                }, 2000);
+                let retryCount = 0;
+                const maxRetries = 20; // 增加重试次数到2秒
+                const retryInterval = 100; 
 
+                const checkSize = () => {
+                    const currentPWidth = priceContainer.clientWidth;
+                    const currentPHeight = priceContainer.clientHeight;
+                    const currentVWidth = volumeContainer.clientWidth;
+                    const currentVHeight = volumeContainer.clientHeight;
+
+                    if (currentPWidth > 0 && currentPHeight > 0 && currentVWidth > 0 && currentVHeight > 0) {
+                        console.log("[DayChart] Size valid now, re-rendering...");
+                        renderDayChart(); // 递归调用重新渲染
+                    } else if (retryCount < maxRetries) {
+                        retryCount++;
+                        console.log(`[DayChart] Waiting for size... Attempt ${retryCount}/${maxRetries}`);
+                        setTimeout(checkSize, retryInterval);
+                    } else {
+                        console.error("[DayChart] Failed to get valid container size after retries.");
+                        priceContainer.innerText = "图表加载失败：容器尺寸始终为0，请尝试刷新页面或调整窗口大小。";
+                        volumeContainer.innerText = "图表加载失败：容器尺寸始终为0。";
+                    }
+                };
+                
+                // 启动检查
+                setTimeout(checkSize, retryInterval);
                 return;
             }
 
@@ -1153,7 +1151,14 @@
                     }
 
                     // 直接使用后端返回的原始分钟数据，不再进行前端重采样
-                    result.data.forEach((item) => {
+                    // 新增：用于调试，打印第一条数据的时间格式
+                    let debugLogged = false;
+                    let firstValidPoint = null; // 新增：记录第一个有效点用于调试
+                    
+                    // 新增：用于跟踪最后生成的时间，防止重复
+                    let lastGeneratedTimeStr = "";
+
+                    result.data.forEach((item, index) => {
                         if (!item.time) return;
 
                         let closePrice = item.close;
@@ -1165,31 +1170,124 @@
                         // 修复：增强时间格式校验和清洗
                         // 期望格式: YYYY-MM-DD HH:mm
                         let timeStr = item.time.trim();
+                        let isValidTime = false;
                         
-                        // 尝试匹配标准的 YYYY-MM-DD HH:mm
+                        // 1. 尝试匹配标准的 YYYY-MM-DD HH:mm
                         const match = timeStr.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})/);
                         if (match) {
                             timeStr = `${match[1]} ${match[2]}`;
-                        } else {
-                            // 如果格式不匹配，跳过该点或尝试其他简单修复
-                            console.warn("Invalid time format from backend, skipping:", timeStr, "Item:", item);
-                            return;
+                            isValidTime = true;
+                        } 
+                        // 2. 尝试匹配 YYYY-MM-DDTHH:mm (ISO 8601 变体)
+                        else if (/(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.test(timeStr)) {
+                            const isoMatch = timeStr.match(/(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+                            if (isoMatch) {
+                                timeStr = `${isoMatch[1]} ${isoMatch[2]}`;
+                                isValidTime = true;
+                            }
+                        } 
+                        // 3. 尝试匹配 YYYY/MM/DD HH:mm
+                        else if (timeStr.includes('/')) {
+                            const slashMatch = timeStr.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}:\d{2})/);
+                            if (slashMatch) {
+                                timeStr = `${slashMatch[1]}-${slashMatch[2]}-${slashMatch[3]} ${slashMatch[4]}`;
+                                isValidTime = true;
+                            }
+                        }
+                    
+                        // 4. 兜底处理：如果上述都失败，但包含日期部分，尝试修复常见截断错误
+                        // 例如 "2026-05-11 2026-" 这种明显错误的格式
+                        if (!isValidTime) {
+                            // 尝试提取前10位作为日期 YYYY-MM-DD
+                            const datePart = timeStr.substring(0, 10);
+                            const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+                        
+                            if (dateRegex.test(datePart)) {
+                                // 改进：根据 A 股交易时间规则生成时间，而不是简单累加
+                                // A股交易时间：09:30-11:30 (120分钟), 13:00-15:00 (120分钟)
+                                // 假设数据是按顺序排列的分钟线
+                            
+                                let hour, minute;
+                                const MORNING_START_MINUTES = 9 * 60 + 30; // 09:30
+                                const MORNING_DURATION = 120; // 09:30 to 11:30 is 2 hours = 120 mins
+                                const AFTERNOON_START_MINUTES = 13 * 60; // 13:00
+                            
+                                if (index < MORNING_DURATION) {
+                                    // 上午时段: 09:30 + index minutes
+                                    const totalMinutes = MORNING_START_MINUTES + index;
+                                    hour = Math.floor(totalMinutes / 60);
+                                    minute = totalMinutes % 60;
+                                } else {
+                                    // 下午时段: 13:00 + (index - 120) minutes
+                                    const afternoonIndex = index - MORNING_DURATION;
+                                    // 检查是否超出下午交易时间 (120分钟)
+                                    if (afternoonIndex >= 120) {
+                                        // 数据点过多，可能是数据错误或包含盘后，跳过
+                                        if (!debugLogged) {
+                                            console.warn("Index exceeds trading hours for simple generation:", index);
+                                        }
+                                        return; 
+                                    }
+                                    const totalMinutes = AFTERNOON_START_MINUTES + afternoonIndex;
+                                    hour = Math.floor(totalMinutes / 60);
+                                    minute = totalMinutes % 60;
+                                }
+                            
+                                // 格式化时间
+                                const timePart = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+                                timeStr = `${datePart} ${timePart}`;
+                                isValidTime = true;
+                            
+                                if (!debugLogged) {
+                                    console.warn("Time format repair attempted for:", item.time, "->", timeStr, "(Index:", index, ")");
+                                    debugLogged = true;
+                                }
+                            }
                         }
 
-                        let vol = item.volume || 0;
-                        if (vol < 0) vol = 0;
+                    if (!isValidTime) {
+                         // 如果依然无法识别，记录错误并跳过
+                        if (!debugLogged) {
+                            console.error("Invalid time format from backend, skipping point. Raw time:", item.time, "Item:", item);
+                            debugLogged = true;
+                        }
+                        return;
+                    }
 
-                        lineData.push({ time: timeStr, value: closePrice });
-                        baselineData.push({ time: timeStr, value: closePrice });
+                    // 新增：防止重复时间点导致 Lightweight Charts 报错或渲染异常
+                    if (timeStr === lastGeneratedTimeStr) {
+                        // 如果时间重复，跳过该点或合并（这里选择跳过，因为分时图通常每分钟一个点）
+                        // console.warn("Duplicate time point skipped:", timeStr);
+                        return;
+                    }
+                    lastGeneratedTimeStr = timeStr;
 
-                        const isUp = preClose > 0 ? (closePrice >= preClose) : true; 
+                    let vol = item.volume || 0;
+                    if (vol < 0) vol = 0;
+
+                    lineData.push({ time: timeStr, value: closePrice });
+                    baselineData.push({ time: timeStr, value: closePrice });
+
+                    const isUp = preClose > 0 ? (closePrice >= preClose) : true; 
                         
-                        volumeData.push({
-                            time: timeStr,
-                            value: vol,
-                            color: isUp ? '#f43f3e' : '#00b42a'
-                        });
+                    volumeData.push({
+                        time: timeStr,
+                        value: vol,
+                        color: isUp ? '#f43f3e' : '#00b42a'
                     });
+
+                    // 记录第一个有效点用于调试
+                    if (!firstValidPoint) {
+                        firstValidPoint = { time: timeStr, value: closePrice };
+                    }
+                });
+                    
+                    // 新增：如果解析后数据为空，但原始数据不为空，说明全是时间格式问题
+                    if (lineData.length === 0 && result.data.length > 0) {
+                        console.error("All minute data points were skipped due to time format issues. Check console for details.");
+                    } else if (firstValidPoint) {
+                        console.log("First valid chart point:", firstValidPoint);
+                    }
                 } else {
                     console.warn("No valid minute data received. Status:", result.status, "Data:", result.data);
                 }
@@ -1222,6 +1320,24 @@
                         secondsVisible: false,
                         fixLeftEdge: false,
                         fixRightEdge: false,
+                        // 新增：自定义刻度标记格式化，确保显示 HH:mm 格式
+                        tickMarkFormatter: (time, tickMarkType, locale) => {
+                            // time 是 YYYY-MM-DD HH:mm 格式的字符串
+                            // 我们只需要提取 HH:mm 部分
+                            if (typeof time === 'string') {
+                                const parts = time.split(' ');
+                                if (parts.length >= 2) {
+                                    return parts[1]; // 返回 HH:mm
+                                }
+                            }
+                            return '';
+                        },
+                        // 修改：优化时间轴显示，防止只有一个时间点
+                        // 移除固定的 barSpacing，让库根据容器宽度自动计算，避免挤压
+                        rightOffset: 0, // 移除右侧留白，让图表填满
+                        minBarSpacing: 0.5, // 允许更密集的显示
+                        // 新增：显式指定时间类型为 'time'，确保正确解析字符串
+                        type: 'time', 
                     },
                 });
 
@@ -1272,6 +1388,21 @@
                         visible: true,
                         timeVisible: true,
                         secondsVisible: false,
+                        // 新增：同步自定义刻度标记格式化
+                        tickMarkFormatter: (time, tickMarkType, locale) => {
+                            if (typeof time === 'string') {
+                                const parts = time.split(' ');
+                                if (parts.length >= 2) {
+                                    return parts[1];
+                                }
+                            }
+                            return '';
+                        },
+                        // 修改：同步优化时间轴显示
+                        rightOffset: 0,
+                        minBarSpacing: 0.5,
+                        // 新增：显式指定时间类型
+                        type: 'time',
                     },
                 });
 
@@ -1369,35 +1500,28 @@
                 void priceContainer.offsetHeight;
                 void volumeContainer.offsetHeight;
 
-                // 获取容器实际尺寸，确保不为0
-                const width = priceContainer.clientWidth;
-                const height = priceContainer.clientHeight;
-                const volWidth = volumeContainer.clientWidth;
-                const volHeight = volumeContainer.clientHeight;
+                // 获取容器实际尺寸
+                let width = priceContainer.clientWidth;
+                let height = priceContainer.clientHeight;
+                let volWidth = volumeContainer.clientWidth;
+                let volHeight = volumeContainer.clientHeight;
 
-                // 如果尺寸为0，同样使用 ResizeObserver
+                // 修复：如果尺寸为0，尝试延迟后再次获取，避免使用复杂的 ResizeObserver 导致的不稳定
                 if (width === 0 || height === 0 || volWidth === 0 || volHeight === 0) {
-                     console.warn("[KChart] Container size is 0, waiting for ResizeObserver...");
-                     const observer = new ResizeObserver(entries => {
-                         for (let entry of entries) {
-                             if (entry.contentRect.width > 0 && entry.contentRect.height > 0) {
-                                 observer.disconnect();
-                                 renderKChart(type);
-                                 break;
-                             }
-                         }
-                     });
-                     const parentWrapper = priceContainer.parentElement;
-                     if (parentWrapper) observer.observe(parentWrapper);
-                     else observer.observe(priceContainer);
-                     
-                     setTimeout(() => {
-                         observer.disconnect();
-                         if (priceContainer.clientWidth === 0) {
-                             priceContainer.innerText = "图表容器尺寸异常";
-                         }
-                     }, 2000);
-                     return;
+                    console.warn("[KChart] Container size is 0, waiting for layout...");
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    
+                    // 再次检查
+                    width = priceContainer.clientWidth;
+                    height = priceContainer.clientHeight;
+                    volWidth = volumeContainer.clientWidth;
+                    volHeight = volumeContainer.clientHeight;
+
+                    if (width === 0 || height === 0 || volWidth === 0 || volHeight === 0) {
+                        console.error("[KChart] Container size still 0 after wait. Aborting render.");
+                        priceContainer.innerText = "图表容器尺寸异常，请尝试刷新页面";
+                        return;
+                    }
                 }
 
                 const candleData = [];
