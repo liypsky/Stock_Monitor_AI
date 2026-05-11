@@ -911,6 +911,8 @@ async fn fetch_minute_data_from_sina(normalized_code: &str, datalen: usize) -> O
         normalized_code, datalen
     );
 
+    println!("🔍 Fetching Minute Data from Sina: {}", url);
+
     let client = reqwest::Client::builder()
         .default_headers({
             let mut headers = reqwest::header::HeaderMap::new();
@@ -946,45 +948,39 @@ async fn try_fetch_minute_from_url(client: &reqwest::Client, url: &str, normaliz
             }
 
             if let Ok(text) = resp.text().await {
+                // 调试日志：打印原始响应的前500字符，帮助诊断 null 或格式问题
+                eprintln!("Raw Minute Response for {} (len={}): {}", normalized_code, text.len(), text.chars().take(500).collect::<String>());
+
                 if text.trim().is_empty() || text.trim() == "null" {
                     eprintln!("⚠️ Minute data response is empty or null for {}", normalized_code);
                     return None;
                 }
                 
-                // 调试日志
-                eprintln!("Raw Minute Response for {}: {}", normalized_code, text.chars().take(200).collect::<String>());
-
                 // 解析逻辑：getKLineData 返回的是 JSONP 格式，例如:
                 // [{"day":"2023-10-27 10:00","open":10.0,"close":10.1,"volume":1000}, ...]
                 // 或者可能有回调函数包裹，如 callback([...])
                 
                 // 清理可能的非法字符和回调函数名
-                let clean_text = text.trim()
-                    .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '(' || c.is_whitespace())
-                    .trim_end_matches(|c: char| c == ')' || c == ';' || c.is_whitespace()); 
+                // 更稳健的清理：移除所有非 JSON 字符（除了 []{}:",.0-9eE 等）
+                // 简单策略：找到第一个 '[' 和最后一个 ']'
                 
-                // 确保以 '[' 开头
-                let json_str = if clean_text.starts_with('[') {
-                    clean_text
-                } else if let Some(start_idx) = clean_text.find('[') {
-                    &clean_text[start_idx..]
-                } else {
-                    eprintln!("⚠️ Invalid JSON format for minute data (no array found): {}", normalized_code);
+                let start_idx = text.find('[')?;
+                let end_idx = text.rfind(']')?;
+                
+                if start_idx >= end_idx {
+                    eprintln!("⚠️ Invalid JSON format for minute data (brackets mismatch): {}", normalized_code);
                     return None;
-                };
+                }
 
-                // 确保以 ']' 结尾
-                let json_str = if json_str.ends_with(']') {
-                    json_str
-                } else if let Some(end_idx) = json_str.rfind(']') {
-                    &json_str[..=end_idx]
-                } else {
-                    eprintln!("⚠️ Invalid JSON format for minute data (no closing bracket): {}", normalized_code);
-                    return None;
-                };
+                let json_str = &text[start_idx..=end_idx];
 
                 match serde_json::from_str::<Vec<Value>>(json_str) {
                     Ok(data_array) => {
+                        if data_array.is_empty() {
+                            eprintln!("⚠️ Parsed minute data array is empty for {}", normalized_code);
+                            return None;
+                        }
+
                         let mut minutes: Vec<MinuteDataPoint> = Vec::new();
                         for item in data_array {
                             // getKLineData 字段: day, open, close, high, low, volume

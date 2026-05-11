@@ -255,12 +255,6 @@
             
             <!-- K线图改为 Lightweight Charts 容器 -->
             <div class="chart-container" id="chart-container-k" style="display: none;">
-                <!-- 新增：均线图例标识 -->
-                <div style="display: flex; gap: 15px; font-size: 12px; margin-bottom: 5px; padding-left: 5px;">
-                    <span style="color: #ff9900;">MA5: <span id="ma5-val">--</span></span>
-                    <span style="color: #cc00ff;">MA10: <span id="ma10-val">--</span></span>
-                    <span style="color: #0099ff;">MA20: <span id="ma20-val">--</span></span>
-                </div>
                 <div class="chart-wrapper">
                     <div id="chart-k-price-div"></div>
                 </div>
@@ -1125,16 +1119,27 @@
                         const now = new Date();
                         const day = now.getDay(); // 0 is Sunday
                         const hour = now.getHours();
+                        const minute = now.getMinutes();
                         const isWeekend = (day === 0 || day === 6);
-                        const isOffHours = (hour < 9 || hour > 15);
                         
-                        if (isWeekend || isOffHours) {
-                             msg += " (当前为非交易时间)";
+                        // A股交易时间: 9:30-11:30, 13:00-15:00
+                        const isTradingTime = !isWeekend && (
+                            (hour === 9 && minute >= 30) || 
+                            (hour === 10) || 
+                            (hour === 11 && minute <= 30) || 
+                            (hour >= 13 && hour < 15)
+                        );
+
+                        if (!isTradingTime) {
+                             msg += " (当前为非交易时间，暂无实时分时数据)";
                         } else {
-                             msg += " (可能停牌、未开盘或数据源异常)";
+                             msg += " (可能停牌、刚开盘数据未同步或数据源异常)";
                         }
                     }
                     priceContainer.innerText = msg;
+                    priceContainer.style.color = "#999";
+                    priceContainer.style.textAlign = "center";
+                    priceContainer.style.paddingTop = "20px";
                     volumeContainer.innerText = "";
                     console.warn("No valid minute data to render for", currentDetailSymbol, "Result:", result);
                     return;
@@ -1340,7 +1345,13 @@
                     grid: { vertLines: { color: '#f0f0f0' }, horzLines: { color: '#f0f0f0' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                     rightPriceScale: { borderColor: '#cccccc' },
-                    timeScale: { borderColor: '#cccccc' },
+                    // 修改：主图显示时间轴，以便用户知道具体日期
+                    timeScale: { 
+                        visible: true,
+                        borderColor: '#cccccc',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
                 });
 
                 // 修复：增加对 addCandlestickSeries 存在的检查，并提供降级处理
@@ -1353,6 +1364,8 @@
                         borderDownColor: '#00b42a',
                         wickUpColor: '#f43f3e',
                         wickDownColor: '#00b42a',
+                        lastValueVisible: false, // 新增：隐藏最新价格标签（横线）
+                        priceLineVisible: false, // 新增：隐藏价格线（如果存在）
                     });
                 } else if (typeof kLinePriceChart.addSeries === 'function') {
                     // 降级方案：尝试使用通用 addSeries (适用于某些特定版本或构建)
@@ -1368,6 +1381,8 @@
                                 borderDownColor: '#00b42a',
                                 wickUpColor: '#f43f3e',
                                 wickDownColor: '#00b42a',
+                                lastValueVisible: false, // 新增：隐藏最新价格标签（横线）
+                                priceLineVisible: false, // 新增：隐藏价格线
                             });
                         } else {
                             throw new Error("CandlestickSeries constructor not found in LightweightCharts");
@@ -1381,64 +1396,6 @@
                 
                 candleSeries.setData(candleData);
 
-                // 添加均线 (MA) - Lightweight Charts 没有内置 MA，需用 LineSeries 模拟
-                // 简单实现 MA5, MA10, MA20 (原为MA30，现改为MA20以匹配常见需求)
-                const calculateMA = (data, period) => {
-                    let ma = [];
-                    for (let i = 0; i < data.length; i++) {
-                        if (i < period - 1) { continue; }
-                        let sum = 0;
-                        for (let j = 0; j < period; j++) sum += data[i - j].close;
-                        ma.push({ time: data[i].time, value: sum / period });
-                    }
-                    return ma;
-                };
-
-                const ma5Series = kLinePriceChart.addLineSeries({ color: '#ff9900', lineWidth: 1 });
-                const ma5Data = calculateMA(candleData, 5);
-                ma5Series.setData(ma5Data);
-                
-                const ma10Series = kLinePriceChart.addLineSeries({ color: '#cc00ff', lineWidth: 1 });
-                const ma10Data = calculateMA(candleData, 10);
-                ma10Series.setData(ma10Data);
-
-                // 修改：将 MA30 改为 MA20，颜色改为蓝色
-                const ma20Series = kLinePriceChart.addLineSeries({ color: '#0099ff', lineWidth: 1 });
-                const ma20Data = calculateMA(candleData, 20);
-                ma20Series.setData(ma20Data);
-
-                // 新增：订阅十字光标移动事件，更新均线数值显示
-                kLinePriceChart.subscribeCrosshairMove(param => {
-                    if (!param.time || param.point.x < 0 || param.point.x > priceContainer.clientWidth || param.point.y < 0 || param.point.y > priceContainer.clientHeight) {
-                        // 鼠标移出图表，显示最新数据
-                        const lastMa5 = ma5Data.length > 0 ? ma5Data[ma5Data.length - 1].value : '--';
-                        const lastMa10 = ma10Data.length > 0 ? ma10Data[ma10Data.length - 1].value : '--';
-                        const lastMa20 = ma20Data.length > 0 ? ma20Data[ma20Data.length - 1].value : '--';
-                        
-                        document.getElementById('ma5-val').innerText = lastMa5 !== '--' ? lastMa5.toFixed(2) : '--';
-                        document.getElementById('ma10-val').innerText = lastMa10 !== '--' ? lastMa10.toFixed(2) : '--';
-                        document.getElementById('ma20-val').innerText = lastMa20 !== '--' ? lastMa20.toFixed(2) : '--';
-                        return;
-                    }
-
-                    // 查找当前时间点对应的 MA 值
-                    const currentMa5 = ma5Data.find(d => d.time === param.time);
-                    const currentMa10 = ma10Data.find(d => d.time === param.time);
-                    const currentMa20 = ma20Data.find(d => d.time === param.time);
-
-                    document.getElementById('ma5-val').innerText = currentMa5 ? currentMa5.value.toFixed(2) : '--';
-                    document.getElementById('ma10-val').innerText = currentMa10 ? currentMa10.value.toFixed(2) : '--';
-                    document.getElementById('ma20-val').innerText = currentMa20 ? currentMa20.value.toFixed(2) : '--';
-                });
-
-                // 初始化显示最新均线的值
-                const initMa5 = ma5Data.length > 0 ? ma5Data[ma5Data.length - 1].value : '--';
-                const initMa10 = ma10Data.length > 0 ? ma10Data[ma10Data.length - 1].value : '--';
-                const initMa20 = ma20Data.length > 0 ? ma20Data[ma20Data.length - 1].value : '--';
-                document.getElementById('ma5-val').innerText = initMa5 !== '--' ? initMa5.toFixed(2) : '--';
-                document.getElementById('ma10-val').innerText = initMa10 !== '--' ? initMa10.toFixed(2) : '--';
-                document.getElementById('ma20-val').innerText = initMa20 !== '--' ? initMa20.toFixed(2) : '--';
-
                 // 创建K线成交量图
                 kLineVolumeChart = LightweightCharts.createChart(volumeContainer, {
                     width: volWidth,
@@ -1447,7 +1404,11 @@
                     grid: { vertLines: { visible: false }, horzLines: { visible: false } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                     rightPriceScale: { visible: false },
-                    timeScale: { borderColor: '#cccccc' },
+                    // 修改：成交量图隐藏时间轴标签，避免与主图重复，但保持同步滚动
+                    timeScale: { 
+                        visible: false, 
+                        borderColor: '#cccccc' 
+                    },
                 });
 
                 // 修改：自定义成交量格式化函数，支持“万”和“亿”
@@ -1467,11 +1428,14 @@
                         formatter: volumeFormatter,
                     },
                     priceScaleId: '',
+                    lastValueVisible: false, // 新增：隐藏成交量最新值标签
                 });
                 volumeSeries.priceScale().applyOptions({
                     scaleMargins: { top: 0.8, bottom: 0 },
                 });
                 volumeSeries.setData(volumeData);
+
+
 
                 // 同步时间轴
                 kLinePriceChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
@@ -1495,7 +1459,7 @@
                     }
                 }).observe(priceContainer);
 
-                // 默认显示最近 30 个单位（日/周/月），并确保内容适配
+                // 默认显示最近 60 个单位（日/周/月），并确保内容适配
                 // 使用 setTimeout 确保 DOM 渲染完成后再调整视图
                 setTimeout(() => {
                     if (kLinePriceChart && kLineVolumeChart) {
@@ -1507,9 +1471,9 @@
                              kLineVolumeChart.applyOptions({ width: finalWidth, height: volumeContainer.clientHeight });
                         }
                         
-                        // 新增：强制设置初始显示范围为最近 30 条数据
+                        // 新增：强制设置初始显示范围为最近 60 条数据 (比30条更宽泛，方便看趋势)
                         const dataLength = candleData.length;
-                        const viewCount = 30; // 默认显示30个单位
+                        const viewCount = 60; 
                         
                         if (dataLength > 0) {
                             // 计算起始索引，确保不为负数
@@ -1612,6 +1576,10 @@
     </script>
 </body>
 </html>
+
+
+
+
 
 
 
