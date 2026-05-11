@@ -390,100 +390,142 @@ async fn get_stock_money_flow(
     if let Some(code) = params.get("code") {
         let normalized_code = normalize_stock_code(code);
         
-        // 东方财富资金流向接口
-        // secid: 1.600519 (sh), 0.000001 (sz)
         let secid = if normalized_code.starts_with("sh") {
             format!("1.{}", &normalized_code[2..])
         } else if normalized_code.starts_with("sz") {
             format!("0.{}", &normalized_code[2..])
         } else if normalized_code.starts_with("bj") {
-            format!("0.{}", &normalized_code[2..]) // 北交所通常也映射到0或特定标识，这里简化处理
+            format!("0.{}", &normalized_code[2..])
         } else {
             format!("0.{}", normalized_code)
         };
 
-        let url = format!(
-            "http://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?cb=jQuery11230_&secid={}&lmt=0&fields1=f1%2Cf2%2Cf3%2Cf7&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61%2Cf62%2Cf63%2Cf64%2Cf65&ut=b2884a393a59ad64002292a3e90d46a5&rt=52",
-            secid
-        );
+        // 策略调整：
+        // 1. 优先使用 daykline 接口 (lmt=1)，因为它返回的是确定的每日汇总数据，结构稳定。
+        // 2. 备用 realtime 接口，用于获取盘中实时变动，但解析逻辑较复杂。
+        
+        let urls = vec![
+            // 首选：日K线资金流向 (取最近1天)
+            format!(
+                "http://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?secid={}&lmt=1&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65&ut=b2884a393a59ad64002292a3e90d46a5",
+                secid
+            ),
+            // 备用：实时资金流向
+            format!(
+                "http://push2.eastmoney.com/api/qt/stock/fflow/realtime/get?secid={}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65&ut=b2884a393a59ad64002292a3e90d46a5",
+                secid
+            )
+        ];
 
         let client = reqwest::Client::builder()
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
-                headers.insert("User-Agent", reqwest::header::HeaderValue::from_static("Mozilla/5.0"));
+                headers.insert("User-Agent", reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
                 headers.insert("Referer", reqwest::header::HeaderValue::from_static("http://quote.eastmoney.com/"));
+                headers.insert("Accept", reqwest::header::HeaderValue::from_static("*/*"));
                 headers
             })
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                if let Ok(text) = resp.text().await {
-                    // 东方财富接口通常返回 JSONP 格式: jQuery11230_({...});
-                    // 改进解析逻辑：查找第一个 '{' 和最后一个 '}'
-                    if let Some(start_idx) = text.find('{') {
-                        if let Some(end_idx) = text.rfind('}') {
-                            let json_str = &text[start_idx..=end_idx];
-                            if let Ok(root) = serde_json::from_str::<Value>(json_str) {
-                                if let Some(data) = root.get("data") {
-                                    if let Some(klines) = data.get("klines") {
-                                        if let Some(arr) = klines.as_array() {
-                                            if !arr.is_empty() {
-                                                // 取最新的一条数据 (通常是最后一个元素，或者第一个取决于排序，东财默认最近在前)
-                                                // 格式: "2023-10-27,-123456.0,12345.0,..."
-                                                // fields2: f51(日期), f52(主力净流入), f53(超大单), f54(大单), f55(中单), f56(小单)...
-                                                if let Some(latest_str) = arr.first().and_then(|v| v.as_str()) {
-                                                    let parts: Vec<&str> = latest_str.split(',').collect();
-                                                    if parts.len() > 5 {
-                                                        let main_net = parts[1].parse::<f64>().unwrap_or(0.0);
-                                                        let super_large = parts[2].parse::<f64>().unwrap_or(0.0);
-                                                        let large = parts[3].parse::<f64>().unwrap_or(0.0);
-                                                        let medium = parts[4].parse::<f64>().unwrap_or(0.0);
-                                                        let small = parts[5].parse::<f64>().unwrap_or(0.0);
-                                                        
-                                                        // 散户通常等于 -(主力+中单+小单) 或者接口有单独字段，这里简单计算或直接使用小单代表散户倾向
-                                                        // 东财定义：散户 = 小单。有些接口定义不同，这里沿用前段逻辑：retail
-                                                        let retail = small; 
+        for (idx, url) in urls.iter().enumerate() {
+            match client.get(url).send().await {
+                Ok(resp) => {
+                    if let Ok(text) = resp.text().await {
+                        // 改进解析逻辑：查找第一个 '{' 和最后一个 '}'
+                        if let Some(start_idx) = text.find('{') {
+                            if let Some(end_idx) = text.rfind('}') {
+                                let json_str = &text[start_idx..=end_idx];
+                                
+                                if let Ok(root) = serde_json::from_str::<Value>(json_str) {
+                                    if let Some(data) = root.get("data") {
+                                        // 检查 data 是否为 null
+                                        if data.is_null() {
+                                            eprintln!("EastMoney MoneyFlow data is null for {} (Attempt {})", normalized_code, idx + 1);
+                                            continue; // 尝试下一个接口
+                                        }
 
-                                                        return Json(json!({
-                                                            "status": "success",
-                                                            "data": {
-                                                                "main_net": main_net,
-                                                                "super_large": super_large,
-                                                                "large": large,
-                                                                "medium": medium,
-                                                                "small": small,
-                                                                "retail": retail
-                                                            }
-                                                        }));
+                                        // --- 解析逻辑 ---
+                                        
+                                        // 情况 A: daykline 接口 (数据结构: data.klines[0] = "date,main,super,large,medium,small...")
+                                        if let Some(klines) = data.get("klines") {
+                                            if let Some(arr) = klines.as_array() {
+                                                if !arr.is_empty() {
+                                                    if let Some(latest_str) = arr.first().and_then(|v| v.as_str()) {
+                                                        let parts: Vec<&str> = latest_str.split(',').collect();
+                                                        // 确保有足够的字段: Date, MainNet, SuperLarge, Large, Medium, Small
+                                                        if parts.len() > 5 {
+                                                            let main_net = parts[1].parse::<f64>().unwrap_or(0.0);
+                                                            let super_large = parts[2].parse::<f64>().unwrap_or(0.0);
+                                                            let large = parts[3].parse::<f64>().unwrap_or(0.0);
+                                                            let medium = parts[4].parse::<f64>().unwrap_or(0.0);
+                                                            let small = parts[5].parse::<f64>().unwrap_or(0.0);
+                                                            
+                                                            let retail = small; 
+
+                                                            return Json(json!({
+                                                                "status": "success",
+                                                                "data": {
+                                                                    "main_net": main_net,
+                                                                    "super_large": super_large,
+                                                                    "large": large,
+                                                                    "medium": medium,
+                                                                    "small": small,
+                                                                    "retail": retail
+                                                                }
+                                                            }));
+                                                        }
                                                     }
                                                 }
                                             }
+                                        } 
+                                        
+                                        // 情况 B: realtime 接口 (数据结构: data 直接包含 f62, f63 等字段，或者在 lists 中)
+                                        // 注意：realtime 接口返回结构可能因版本而异，通常 f62=主力, f63=超大, f64=大单, f65=中单, f66=小单
+                                        // 这里尝试直接读取 data 下的字段
+                                        else if data.get("f62").is_some() {
+                                            let main_net = data.get("f62").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                            let super_large = data.get("f63").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                            let large = data.get("f64").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                            let medium = data.get("f65").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                            let small = data.get("f66").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                            
+                                            // 有些 realtime 接口返回的是累计值或瞬时值，单位可能不同，这里假设单位一致(元)
+                                            // 如果数据全为0，可能是停牌或未开盘
+                                            
+                                            return Json(json!({
+                                                "status": "success",
+                                                "data": {
+                                                    "main_net": main_net,
+                                                    "super_large": super_large,
+                                                    "large": large,
+                                                    "medium": medium,
+                                                    "small": small,
+                                                    "retail": small
+                                                }
+                                            }));
                                         }
+                                    } else {
+                                        eprintln!("EastMoney MoneyFlow no data field");
                                     }
+                                } else {
+                                    eprintln!("Failed to parse JSON from EastMoney: {}", json_str.chars().take(100).collect::<String>());
                                 }
-                            } else {
-                                eprintln!("Failed to parse JSON from EastMoney: {}", json_str.chars().take(100).collect::<String>());
                             }
                         }
                     }
                 }
+                Err(e) => {
+                    eprintln!("Fetch money flow error (Attempt {}): {}", idx + 1, e);
+                    continue;
+                }
             }
-            Err(e) => eprintln!("Fetch money flow error: {}", e)
         }
         
-        // 如果获取失败，返回全0或错误，前端应处理
+        // 如果所有接口都失败
         Json(json!({
-            "status": "success",
-            "data": {
-                "main_net": 0.0,
-                "super_large": 0.0,
-                "large": 0.0,
-                "medium": 0.0,
-                "small": 0.0,
-                "retail": 0.0
-            }
+            "status": "error",
+            "msg": "暂无资金流向数据"
         }))
     } else {
         Json(json!({"status": "error"}))
@@ -862,9 +904,8 @@ fn parse_sina_data(raw_text: &str) -> Vec<StockInfo> {
 
 // 新增：辅助函数，用于获取分时数据，避免闭包所有权问题
 async fn fetch_minute_data_from_sina(normalized_code: &str, datalen: usize) -> Option<Vec<MinuteDataPoint>> {
-    // 使用新浪财经的分时成交明细接口或者分钟K线接口
-    // 这里使用分钟K线接口，scale=1 表示1分钟
-    // 注意：新浪接口 datalen 最大通常限制在 1000-2000 左右
+    // 策略调整：直接使用新浪财经的 getKLineData 接口，该接口相对稳定
+    // 注意：该接口返回的是 JSONP 格式，需要解析
     let url = format!(
         "http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={}&scale=1&ma=5&datalen={}",
         normalized_code, datalen
@@ -873,113 +914,110 @@ async fn fetch_minute_data_from_sina(normalized_code: &str, datalen: usize) -> O
     let client = reqwest::Client::builder()
         .default_headers({
             let mut headers = reqwest::header::HeaderMap::new();
-            // 关键：新浪接口通常校验 Referer 和 User-Agent
             headers.insert(
                 "User-Agent", 
                 reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             );
             headers.insert(
                 "Referer", 
-                reqwest::header::HeaderValue::from_static("http://finance.sina.com.cn/realstock/company/sh600519/nc.shtml")
-            );
-            headers.insert(
-                "Host",
-                reqwest::header::HeaderValue::from_static("money.finance.sina.com.cn")
+                reqwest::header::HeaderValue::from_static("https://finance.sina.com.cn/")
             );
             headers
         })
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
-    match client.get(&url).send().await {
+    // 尝试获取数据
+    if let Some(data) = try_fetch_minute_from_url(&client, &url, normalized_code).await {
+        return Some(data);
+    }
+
+    None
+}
+
+// 新增：通用的分时数据抓取逻辑 (适配 getKLineData 接口)
+async fn try_fetch_minute_from_url(client: &reqwest::Client, url: &str, normalized_code: &str) -> Option<Vec<MinuteDataPoint>> {
+    match client.get(url).send().await {
         Ok(resp) => {
-            let status = resp.status();
-            if !status.is_success() {
-                eprintln!("Fetch Minute Data HTTP Error: {} for {}", status, normalized_code);
+            if !resp.status().is_success() {
+                eprintln!("Fetch Minute Data HTTP Error: {} for {}", resp.status(), normalized_code);
                 return None;
             }
 
             if let Ok(text) = resp.text().await {
-                // 调试：打印原始响应的前200字符，帮助排查格式问题
-                // eprintln!("Raw Minute Response for {}: {}", normalized_code, text.chars().take(200).collect::<String>());
-
                 if text.trim().is_empty() || text.trim() == "null" {
+                    eprintln!("⚠️ Minute data response is empty or null for {}", normalized_code);
                     return None;
                 }
                 
-                // 尝试清理可能的非法字符或BOM头，以及新浪接口可能返回的非标准JSON包装
-                // 有些时候新浪返回的是 [...] 或者是 jQueryCallback([...])
-                let clean_text = text.trim()
-                    .trim_start_matches(|c: char| c.is_control() && c != '\n' && c != '\r')
-                    .trim_end_matches(';'); 
+                // 调试日志
+                eprintln!("Raw Minute Response for {}: {}", normalized_code, text.chars().take(200).collect::<String>());
+
+                // 解析逻辑：getKLineData 返回的是 JSONP 格式，例如:
+                // [{"day":"2023-10-27 10:00","open":10.0,"close":10.1,"volume":1000}, ...]
+                // 或者可能有回调函数包裹，如 callback([...])
                 
-                // 如果是 JSONP 格式，尝试提取数组部分
+                // 清理可能的非法字符和回调函数名
+                let clean_text = text.trim()
+                    .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '(' || c.is_whitespace())
+                    .trim_end_matches(|c: char| c == ')' || c == ';' || c.is_whitespace()); 
+                
+                // 确保以 '[' 开头
                 let json_str = if clean_text.starts_with('[') {
                     clean_text
-                } else if let Some(start) = clean_text.find('[') {
-                    if let Some(end) = clean_text.rfind(']') {
-                        &clean_text[start..=end]
-                    } else {
-                        clean_text
-                    }
+                } else if let Some(start_idx) = clean_text.find('[') {
+                    &clean_text[start_idx..]
                 } else {
-                    clean_text
+                    eprintln!("⚠️ Invalid JSON format for minute data (no array found): {}", normalized_code);
+                    return None;
+                };
+
+                // 确保以 ']' 结尾
+                let json_str = if json_str.ends_with(']') {
+                    json_str
+                } else if let Some(end_idx) = json_str.rfind(']') {
+                    &json_str[..=end_idx]
+                } else {
+                    eprintln!("⚠️ Invalid JSON format for minute data (no closing bracket): {}", normalized_code);
+                    return None;
                 };
 
                 match serde_json::from_str::<Vec<Value>>(json_str) {
                     Ok(data_array) => {
                         let mut minutes: Vec<MinuteDataPoint> = Vec::new();
                         for item in data_array {
-                            // 尝试多种时间字段名: day, d, date, time
-                            // 新浪分钟K线通常返回 "day": "2023-10-27 10:00:00" 或类似格式
-                            let time_str = item.get("day").and_then(|v| v.as_str())
-                                .or_else(|| item.get("d").and_then(|v| v.as_str()))
-                                .or_else(|| item.get("date").and_then(|v| v.as_str()))
-                                .or_else(|| item.get("time").and_then(|v| v.as_str()));
+                            // getKLineData 字段: day, open, close, high, low, volume
+                            let time_str = item.get("day").and_then(|v| v.as_str());
                             
                             if let Some(day) = time_str {
-                                // 宽松校验：只要长度大于等于5 (HH:MM) 即可
+                                // 简单校验时间格式，避免无效数据
                                 if day.len() < 5 { 
                                     continue; 
                                 }
                                 
-                                // 提取时间部分，假设格式为 YYYY-MM-DD HH:MM:SS 或 YYYY/MM/DD HH:MM
-                                // 我们主要需要 HH:MM 用于前端展示
-                                let time_part = if day.contains(' ') {
-                                    let parts: Vec<&str> = day.split(' ').collect();
-                                    if let Some(last) = parts.last() {
-                                        // 取最后5位 HH:MM，如果带秒则取前5位
-                                        let t = if last.len() >= 5 { &last[0..5] } else { last };
-                                        t
-                                    } else { day }
-                                } else if day.contains('/') {
-                                     // 处理 2023/10/27 10:00 格式
-                                     let parts: Vec<&str> = day.split(' ').collect();
-                                     if let Some(last) = parts.last() {
-                                         if last.len() >= 5 { &last[0..5] } else { last }
-                                     } else { day }
-                                } else if day.len() >= 5 {
-                                    // 假设最后5位是时间
-                                    &day[day.len()-5..]
+                                // 统一转换为 "YYYY-MM-DD HH:MM" 格式
+                                // 接口返回格式通常为: "2023-10-27 10:00" 或 "2023-10-27/10:00"
+                                let formatted_time = if day.contains('/') {
+                                    day.replace('/', " ")
                                 } else {
-                                    day
+                                    day.to_string()
                                 };
                                 
                                 let open = item.get("open").and_then(|v| v.as_f64()).unwrap_or(0.0);
                                 let close = item.get("close").and_then(|v| v.as_f64()).unwrap_or(0.0);
                                 let volume = item.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0); 
                                 
-                                // 如果 close 为 0，尝试使用 price 字段
-                                let final_close = if close > 0.0 { close } else { item.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0) };
+                                let final_close = if close > 0.0 { close } else { open };
 
                                 if final_close <= 0.0 {
                                     continue;
                                 }
 
                                 minutes.push(MinuteDataPoint {
-                                    time: time_part.to_string(), // 前端展示用 HH:MM
+                                    time: formatted_time,
                                     price: final_close,
-                                    avg_price: 0.0, // 均价需要前端或后端累计计算，这里先置0，前端会重新计算
+                                    avg_price: 0.0, // 均价需前端或后端额外计算，此处暂置0，前端会重新计算
                                     volume,
                                     open,
                                     close: final_close,
@@ -987,11 +1025,11 @@ async fn fetch_minute_data_from_sina(normalized_code: &str, datalen: usize) -> O
                             }
                         }
                         
-                        // 如果数据点太少，可能不是有效的分时数据
-                        if minutes.len() < 2 {
-                            eprintln!("⚠️ Too few minute data points for {}: {}", normalized_code, minutes.len());
+                        if minutes.is_empty() {
+                            eprintln!("⚠️ No valid minute data points parsed for {}", normalized_code);
                             None
                         } else {
+                            eprintln!("✅ Successfully parsed {} minute data points for {}", minutes.len(), normalized_code);
                             Some(minutes)
                         }
                     }
@@ -1001,6 +1039,7 @@ async fn fetch_minute_data_from_sina(normalized_code: &str, datalen: usize) -> O
                     }
                 }
             } else {
+                eprintln!("Failed to read response text for {}", normalized_code);
                 None
             }
         }
@@ -1070,7 +1109,7 @@ async fn get_stock_minute_data(
 // 新增：从东方财富获取K线数据 (替代新浪财经，解决新浪返回null问题)
 async fn fetch_kline_data_from_eastmoney(normalized_code: &str, klt: &str, lmt: usize) -> Option<Vec<KLineDataPoint>> {
     // 东方财富 secid 格式: 市场代码.股票代码
-    // 1: 上海 (sh), 0: 深圳 (sz), 0: 北交所 (bj - 通常也归为0或特定，这里简化处理，大部分情况0/1即可覆盖)
+    // 1: 上海 (sh), 0: 深圳 (sz), 0: 北交所 (bj - 通常也归为0或特定，这里简化处理)
     let secid = if normalized_code.starts_with("sh") {
         format!("1.{}", &normalized_code[2..])
     } else if normalized_code.starts_with("sz") {

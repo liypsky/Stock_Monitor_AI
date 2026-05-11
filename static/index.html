@@ -850,13 +850,21 @@
 
                 } else {
                     console.error("Failed to load detail data", result);
+                    // 即使详情失败，也尝试加载资金流向，或者显示错误
                 }
 
                 // 2. 获取资金流向
-                const mfRes = await fetch(`/api/stock_money_flow?code=${currentDetailSymbol}`);
-                const mfResult = await mfRes.json();
-                if (mfResult.status === 'success') {
-                    renderMoneyFlow(mfResult.data);
+                try {
+                    const mfRes = await fetch(`/api/stock_money_flow?code=${currentDetailSymbol}`);
+                    const mfResult = await mfRes.json();
+                    if (mfResult.status === 'success') {
+                        renderMoneyFlow(mfResult.data);
+                    } else {
+                        document.getElementById('mf-bars').innerHTML = '<div style="text-align:center; color:#999; padding:10px;">资金数据获取失败</div>';
+                    }
+                } catch (mfErr) {
+                    console.error("Load money flow error:", mfErr);
+                    document.getElementById('mf-bars').innerHTML = '<div style="text-align:center; color:#999; padding:10px;">资金数据网络错误</div>';
                 }
 
             } catch (e) {
@@ -868,6 +876,23 @@
             const container = document.getElementById('mf-bars');
             container.innerHTML = '';
             
+            // 处理错误状态
+            if (!data) {
+                container.innerHTML = '<div style="text-align:center; color:#999; padding:10px;">数据加载失败</div>';
+                return;
+            }
+
+            // 如果后端返回的是错误对象（包含 msg 字段）
+            if (data.msg) {
+                 // 修改：区分“无数据”和“获取失败”
+                 if (data.msg.includes("暂无") || data.msg.includes("null")) {
+                     container.innerHTML = '<div style="text-align:center; color:#999; padding:10px;">暂无今日资金数据</div>';
+                 } else {
+                     container.innerHTML = `<div style="text-align:center; color:#999; padding:10px;">${data.msg}</div>`;
+                 }
+                 return;
+            }
+
             const items = [
                 { key: 'main_net', label: '主力' },
                 { key: 'super_large', label: '超大' },
@@ -878,17 +903,26 @@
             ];
 
             // 找出最大值用于计算比例
-            const maxVal = Math.max(...items.map(i => Math.abs(data[i.key])));
-            if (maxVal === 0) return;
+            const maxVal = Math.max(...items.map(i => Math.abs(data[i.key] || 0)));
+            
+            const effectiveMax = maxVal === 0 ? 1 : maxVal; 
+
+            // 检查是否所有数据都为0
+            const allZero = items.every(item => (data[item.key] || 0) === 0);
+
+            // 如果全为0，可能是停牌或无数据，给出提示
+            if (allZero) {
+                 // 这里不直接返回，而是显示灰色条，因为确实可能资金流动为0
+                 // 但为了用户体验，可以在底部加一行小字提示
+            }
 
             items.forEach(item => {
-                const val = data[item.key];
-                const percent = (Math.abs(val) / maxVal) * 100;
+                const val = data[item.key] || 0;
+                const percent = (Math.abs(val) / effectiveMax) * 100;
                 const isPositive = val >= 0;
                 const color = isPositive ? '#f43f3e' : '#00b42a'; // 红进绿出
                 const sign = isPositive ? '+' : '';
                 
-                // 格式化金额
                 let formattedVal = '';
                 if (Math.abs(val) > 100000000) formattedVal = `${sign}${(val/100000000).toFixed(2)}亿`;
                 else if (Math.abs(val) > 10000) formattedVal = `${sign}${(val/10000).toFixed(2)}万`;
@@ -896,16 +930,28 @@
 
                 const row = document.createElement('div');
                 row.className = 'mf-row';
+                
+                const barColor = allZero ? '#ccc' : color;
+                const displayPercent = allZero ? 0 : percent;
+
                 row.innerHTML = `
                     <div class="mf-label">${item.label}</div>
                     <div class="mf-bar-bg">
                         <div class="mf-center-line"></div>
-                        <div class="mf-bar-fill" style="width: ${percent}%; background: ${color}; margin-left: ${isPositive ? '50%' : (50-percent)+'%'}"></div>
+                        <div class="mf-bar-fill" style="width: ${displayPercent}%; background: ${barColor}; margin-left: ${isPositive ? '50%' : (50-displayPercent)+'%'}"></div>
                     </div>
-                    <div class="mf-val" style="color: ${color}">${formattedVal}</div>
+                    <div class="mf-val" style="color: ${allZero ? '#999' : color}">${formattedVal}</div>
                 `;
                 container.appendChild(row);
             });
+            
+            // 如果全为0，添加提示
+            if (allZero) {
+                const tip = document.createElement('div');
+                tip.style.cssText = "width:100%; text-align:center; color:#999; font-size:12px; margin-top:5px;";
+                tip.innerText = "今日资金流向数据暂未更新、为0或该股停牌";
+                container.appendChild(tip);
+            }
         }
 
         function closeDetail() {
@@ -984,23 +1030,39 @@
                 dayVolumeChart = null;
             }
 
-            // 清空容器
+            // 清空容器内容，防止残留文本
             priceContainer.innerHTML = '';
             volumeContainer.innerHTML = '';
 
+            // 检查容器尺寸，如果为0则延迟重试
+            if (priceContainer.clientWidth === 0 || priceContainer.clientHeight === 0) {
+                console.warn("Chart container has zero size, retrying in 100ms...");
+                setTimeout(renderDayChart, 100);
+                return;
+            }
+
             try {
-                const res = await fetch(`/api/stock_minute_data?code=${currentDetailSymbol}`);
+                // 修改：增加 datalen 以获取更长时间跨度的数据，并确保参数正确
+                const res = await fetch(`/api/stock_minute_data?code=${currentDetailSymbol}&datalen=240`);
                 const result = await res.json();
                 
+                console.log("Minute Data Result:", result);
+
                 let lineData = [];
                 let areaData = []; // 均价线
                 let volumeData = [];
-                let timeLabels = [];
 
-                if (result.status === 'success' && result.data && result.data.length > 0) {
+                // 优化：更严格的数据校验
+                if (result.status === 'success' && result.data && Array.isArray(result.data) && result.data.length > 0) {
                     let totalVol = 0;
                     let totalAmount = 0;
+                    let lastClose = 0; // 用于计算当前分钟的涨跌
                     
+                    // 获取昨收价，用于判断红绿柱
+                    // 注意：分时接口可能不直接返回昨收，需要从 detail 数据或第一笔数据推断
+                    // 这里假设 currentDetailData 中有 pre_close
+                    const preClose = currentDetailData && currentDetailData.pre_close > 0 ? currentDetailData.pre_close : result.data[0].open;
+
                     result.data.forEach((item, index) => {
                         if (!item.time) return;
 
@@ -1014,33 +1076,67 @@
                         
                         if (!closePrice || closePrice <= 0) return;
 
-                        // Lightweight Charts 时间格式: 'HH:mm' 或 Unix Timestamp
-                        // 假设 API 返回 'HH:mm'，直接使用。如果是 timestamp，需转换。
-                        // 这里假设 API 返回的是适合显示的字符串，LC 需要 'HH:mm' 格式用于分时图
-                        const timeStr = item.time; 
-                        
+                        // 格式化时间，确保 Lightweight Charts 能识别
+                        // 期望格式: "YYYY-MM-DD HH:mm"
+                        let timeStr = item.time.trim();
+                        // 简单清洗，防止多余空格
+                        timeStr = timeStr.replace(/\s+/g, ' '); 
+
                         let vol = item.volume || 0;
+                        if (vol < 0) vol = 0;
+
+                        // 计算成交额估算值 (价格 * 成交量)
+                        // 注意：新浪分钟数据 volume 通常是手(100股) 还是 股？
+                        // 新浪 getKLineData 返回的 volume 通常是 手
+                        // 为了图表显示，我们直接使用原始值，或者乘以100
+                        // 这里保持原始值，因为主要是看相对大小
                         
-                        const currAmount = ((item.open || closePrice) + closePrice) / 2 * vol;
+                        const currAmount = closePrice * vol * 100; // 假设 vol 是手，转为元
                         totalVol += vol;
                         totalAmount += currAmount;
                         
-                        const avgP = totalVol > 0 ? totalAmount / totalVol : (areaData.length > 0 ? areaData[areaData.length - 1].value : closePrice);
+                        // 计算均价
+                        const avgP = totalVol > 0 ? totalAmount / (totalVol * 100) : (areaData.length > 0 ? areaData[areaData.length - 1].value : closePrice);
 
                         lineData.push({ time: timeStr, value: closePrice });
                         areaData.push({ time: timeStr, value: avgP });
                         
+                        // 确定颜色：对比上一分钟收盘价或开盘价
+                        // 简化：对比 preClose
+                        const isUp = closePrice >= preClose;
+                        
                         volumeData.push({
                             time: timeStr,
                             value: vol,
-                            color: closePrice >= (item.open || closePrice) ? '#f43f3e' : '#00b42a'
+                            color: isUp ? '#f43f3e' : '#00b42a'
                         });
+                        
+                        lastClose = closePrice;
                     });
                 }
 
                 if (lineData.length === 0) {
-                    priceContainer.innerText = "暂无分时数据";
+                    // 优化提示信息
+                    let msg = "暂无分时数据";
+                    if (result.status === 'error') {
+                        msg = "数据获取失败: " + (result.msg || "未知错误");
+                    } else {
+                        // 检查是否是周末或非交易时间
+                        const now = new Date();
+                        const day = now.getDay(); // 0 is Sunday
+                        const hour = now.getHours();
+                        const isWeekend = (day === 0 || day === 6);
+                        const isOffHours = (hour < 9 || hour > 15);
+                        
+                        if (isWeekend || isOffHours) {
+                             msg += " (当前为非交易时间)";
+                        } else {
+                             msg += " (可能停牌、未开盘或数据源异常)";
+                        }
+                    }
+                    priceContainer.innerText = msg;
                     volumeContainer.innerText = "";
+                    console.warn("No valid minute data to render for", currentDetailSymbol, "Result:", result);
                     return;
                 }
 
@@ -1049,10 +1145,23 @@
                     width: priceContainer.clientWidth,
                     height: priceContainer.clientHeight,
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
-                    grid: { vertLines: { visible: false }, horzLines: { color: '#f0f0f0' } },
+                    grid: { vertLines: { color: '#f0f0f0' }, horzLines: { color: '#f0f0f0' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                     rightPriceScale: { borderColor: '#cccccc' },
-                    timeScale: { borderColor: '#cccccc', visible: false }, // 隐藏主图时间轴
+                    timeScale: { 
+                        borderColor: '#cccccc',
+                        visible: true,
+                        timeVisible: true,
+                        secondsVisible: false,
+                        tickMarkFormatter: (time) => {
+                            // 自定义时间轴标签，只显示 HH:mm
+                            const date = new Date(time);
+                            // 注意：Lightweight Charts 的时间字符串解析可能依赖浏览器环境
+                            // 如果传入的是 "2023-10-27 10:00"，它通常能自动处理
+                            // 这里不需要额外格式化，库会自动处理
+                            return ''; 
+                        }
+                    },
                 });
 
                 const areaSeries = dayPriceChart.addAreaSeries({
@@ -1078,13 +1187,18 @@
                     grid: { vertLines: { visible: false }, horzLines: { visible: false } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                     rightPriceScale: { visible: false },
-                    timeScale: { borderColor: '#cccccc' },
+                    timeScale: { 
+                        borderColor: '#cccccc',
+                        visible: true,
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
                 });
 
                 const volumeSeries = dayVolumeChart.addHistogramSeries({
                     color: '#26a69a',
                     priceFormat: { type: 'volume' },
-                    priceScaleId: '', // 覆盖在底部
+                    priceScaleId: '',
                 });
                 volumeSeries.priceScale().applyOptions({
                     scaleMargins: { top: 0.8, bottom: 0 },
@@ -1107,9 +1221,17 @@
                 new ResizeObserver(entries => {
                     if (entries.length === 0 || entries[0].target !== priceContainer) { return; }
                     const newRect = entries[0].contentRect;
-                    dayPriceChart.applyOptions({ height: newRect.height, width: newRect.width });
-                    dayVolumeChart.applyOptions({ height: volumeContainer.clientHeight, width: newRect.width });
+                    if (newRect.width > 0 && newRect.height > 0) {
+                        dayPriceChart.applyOptions({ height: newRect.height, width: newRect.width });
+                        dayVolumeChart.applyOptions({ height: volumeContainer.clientHeight, width: newRect.width });
+                    }
                 }).observe(priceContainer);
+
+                setTimeout(() => {
+                    if (dayPriceChart && dayVolumeChart) {
+                        dayPriceChart.timeScale().fitContent();
+                    }
+                }, 50);
 
             } catch (e) {
                 console.error("Render day chart error:", e);
