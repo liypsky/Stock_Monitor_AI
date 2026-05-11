@@ -96,12 +96,47 @@
 
         .money-flow-container { margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px; }
         .mf-title { font-size: 1em; font-weight: bold; margin-bottom: 10px; }
-        .mf-bars { display: flex; flex-direction: column; gap: 8px; }
-        .mf-row { display: flex; align-items: center; font-size: 0.85em; }
-        .mf-label { width: 60px; color: #666; }
-        .mf-bar-bg { flex: 1; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; position: relative; margin: 0 10px; }
-        .mf-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
-        .mf-val { width: 80px; text-align: right; font-family: monospace; }
+        /* 修改：资金流向改为水平布局 */
+        .mf-bars { 
+            display: flex; 
+            flex-direction: row; /* 改为水平排列 */
+            gap: 15px; /* 间距 */
+            overflow-x: auto; /* 允许横向滚动以防过窄 */
+            padding-bottom: 5px; /* 滚动条空间 */
+            align-items: center;
+        }
+        .mf-row { 
+            display: flex; 
+            flex-direction: column; /* 每个项目内部垂直排列：标签在上，图在中，值在下 */
+            align-items: center;
+            min-width: 80px; /* 最小宽度 */
+            flex: 1; /* 平均分配空间 */
+            font-size: 0.8em; 
+        }
+        /* 删除: .mf-label { width: 60px; color: #666; } */
+        .mf-label { 
+            color: #666; 
+            margin-bottom: 4px; 
+            white-space: nowrap;
+        }
+        /* 删除: .mf-bar-bg { flex: 1; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; position: relative; margin: 0 10px; } */
+        .mf-bar-bg { 
+            width: 100%; 
+            height: 6px; 
+            background: #eee; 
+            border-radius: 3px; 
+            overflow: hidden; 
+            position: relative; 
+            margin: 2px 0; 
+        }
+        .mf-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+        /* 删除: .mf-val { width: 80px; text-align: right; font-family: monospace; } */
+        .mf-val { 
+            text-align: center; 
+            font-family: monospace; 
+            font-size: 0.9em;
+            margin-top: 2px;
+        }
         .mf-center-line { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #ccc; z-index: 1; }
     </style>
 </head>
@@ -220,6 +255,12 @@
             
             <!-- K线图改为 Lightweight Charts 容器 -->
             <div class="chart-container" id="chart-container-k" style="display: none;">
+                <!-- 新增：均线图例标识 -->
+                <div style="display: flex; gap: 15px; font-size: 12px; margin-bottom: 5px; padding-left: 5px;">
+                    <span style="color: #ff9900;">MA5: <span id="ma5-val">--</span></span>
+                    <span style="color: #cc00ff;">MA10: <span id="ma10-val">--</span></span>
+                    <span style="color: #0099ff;">MA20: <span id="ma20-val">--</span></span>
+                </div>
                 <div class="chart-wrapper">
                     <div id="chart-k-price-div"></div>
                 </div>
@@ -770,9 +811,31 @@
                         const el = document.getElementById(id);
                         if (val && val > 0) {
                             el.innerText = val.toFixed(2);
+                            // 新增：根据涨跌设置颜色
+                            // 对于“涨停”和“跌停”，通常涨停价>昨收(红)，跌停价<昨收(绿)
+                            // 对于“最高”、“最低”、“今开”，通常对比昨收
+                            // 这里统一逻辑：如果值 > pre_close 则红， < pre_close 则绿，等于则无色
+                            
+                            let basePrice = d.pre_close;
+                            // 特殊处理：如果是涨停/跌停价，它们本身就是基于昨收计算的极限值
+                            // 但为了视觉统一，我们依然对比昨收
+                            
+                            if (basePrice > 0) {
+                                if (val > basePrice) {
+                                    el.className = 'stat-value up';
+                                } else if (val < basePrice) {
+                                    el.className = 'stat-value down';
+                                } else {
+                                    el.className = 'stat-value';
+                                }
+                            } else {
+                                el.className = 'stat-value';
+                            }
+
                         } else if (!currentDetailData || currentChartType !== 'day') {
                              // 如果没有历史数据且当前无值，显示 --
                              el.innerText = '--';
+                             el.className = 'stat-value';
                         }
                         // 如果有历史数据(currentDetailData)，且新值为0，则保持原样不更新，或者根据需求显示 --
                         // 这里选择：如果新数据为0，但旧数据有值，保持旧值（模拟“取上一个开盘日”的效果，实际是保持最后已知好值）
@@ -1197,7 +1260,7 @@
                 candleSeries.setData(candleData);
 
                 // 添加均线 (MA) - Lightweight Charts 没有内置 MA，需用 LineSeries 模拟
-                // 简单实现 MA5, MA10, MA30
+                // 简单实现 MA5, MA10, MA20 (原为MA30，现改为MA20以匹配常见需求)
                 const calculateMA = (data, period) => {
                     let ma = [];
                     for (let i = 0; i < data.length; i++) {
@@ -1210,13 +1273,49 @@
                 };
 
                 const ma5Series = kLinePriceChart.addLineSeries({ color: '#ff9900', lineWidth: 1 });
-                ma5Series.setData(calculateMA(candleData, 5));
+                const ma5Data = calculateMA(candleData, 5);
+                ma5Series.setData(ma5Data);
                 
-                const ma10Series = kLinePriceChart.addLineSeries({ color: '#0099ff', lineWidth: 1 });
-                ma10Series.setData(calculateMA(candleData, 10));
+                const ma10Series = kLinePriceChart.addLineSeries({ color: '#cc00ff', lineWidth: 1 });
+                const ma10Data = calculateMA(candleData, 10);
+                ma10Series.setData(ma10Data);
 
-                const ma30Series = kLinePriceChart.addLineSeries({ color: '#cc00ff', lineWidth: 1 });
-                ma30Series.setData(calculateMA(candleData, 30));
+                // 修改：将 MA30 改为 MA20，颜色改为蓝色
+                const ma20Series = kLinePriceChart.addLineSeries({ color: '#0099ff', lineWidth: 1 });
+                const ma20Data = calculateMA(candleData, 20);
+                ma20Series.setData(ma20Data);
+
+                // 新增：订阅十字光标移动事件，更新均线数值显示
+                kLinePriceChart.subscribeCrosshairMove(param => {
+                    if (!param.time || param.point.x < 0 || param.point.x > priceContainer.clientWidth || param.point.y < 0 || param.point.y > priceContainer.clientHeight) {
+                        // 鼠标移出图表，显示最新数据
+                        const lastMa5 = ma5Data.length > 0 ? ma5Data[ma5Data.length - 1].value : '--';
+                        const lastMa10 = ma10Data.length > 0 ? ma10Data[ma10Data.length - 1].value : '--';
+                        const lastMa20 = ma20Data.length > 0 ? ma20Data[ma20Data.length - 1].value : '--';
+                        
+                        document.getElementById('ma5-val').innerText = lastMa5 !== '--' ? lastMa5.toFixed(2) : '--';
+                        document.getElementById('ma10-val').innerText = lastMa10 !== '--' ? lastMa10.toFixed(2) : '--';
+                        document.getElementById('ma20-val').innerText = lastMa20 !== '--' ? lastMa20.toFixed(2) : '--';
+                        return;
+                    }
+
+                    // 查找当前时间点对应的 MA 值
+                    const currentMa5 = ma5Data.find(d => d.time === param.time);
+                    const currentMa10 = ma10Data.find(d => d.time === param.time);
+                    const currentMa20 = ma20Data.find(d => d.time === param.time);
+
+                    document.getElementById('ma5-val').innerText = currentMa5 ? currentMa5.value.toFixed(2) : '--';
+                    document.getElementById('ma10-val').innerText = currentMa10 ? currentMa10.value.toFixed(2) : '--';
+                    document.getElementById('ma20-val').innerText = currentMa20 ? currentMa20.value.toFixed(2) : '--';
+                });
+
+                // 初始化显示最新均线的值
+                const initMa5 = ma5Data.length > 0 ? ma5Data[ma5Data.length - 1].value : '--';
+                const initMa10 = ma10Data.length > 0 ? ma10Data[ma10Data.length - 1].value : '--';
+                const initMa20 = ma20Data.length > 0 ? ma20Data[ma20Data.length - 1].value : '--';
+                document.getElementById('ma5-val').innerText = initMa5 !== '--' ? initMa5.toFixed(2) : '--';
+                document.getElementById('ma10-val').innerText = initMa10 !== '--' ? initMa10.toFixed(2) : '--';
+                document.getElementById('ma20-val').innerText = initMa20 !== '--' ? initMa20.toFixed(2) : '--';
 
                 // 创建K线成交量图
                 kLineVolumeChart = LightweightCharts.createChart(volumeContainer, {
@@ -1229,9 +1328,22 @@
                     timeScale: { borderColor: '#cccccc' },
                 });
 
+                // 修改：自定义成交量格式化函数，支持“万”和“亿”
+                const volumeFormatter = (value) => {
+                    if (value >= 100000000) {
+                        return (value / 100000000).toFixed(2) + '亿';
+                    } else if (value >= 10000) {
+                        return (value / 10000).toFixed(2) + '万';
+                    }
+                    return value.toFixed(0);
+                };
+
                 const volumeSeries = kLineVolumeChart.addHistogramSeries({
                     color: '#26a69a',
-                    priceFormat: { type: 'volume' },
+                    priceFormat: {
+                        type: 'custom',
+                        formatter: volumeFormatter,
+                    },
                     priceScaleId: '',
                 });
                 volumeSeries.priceScale().applyOptions({
@@ -1378,3 +1490,6 @@
     </script>
 </body>
 </html>
+
+
+
