@@ -908,7 +908,6 @@ async fn get_stock_minute_data(
         let datalen = params.get("datalen").unwrap_or(&"240".to_string()).parse::<usize>().unwrap_or(240);
 
         // 转换代码格式为东方财富接口所需格式
-        // sh600000 -> 1.600000, sz000001 -> 0.000001
         let secid = if normalized_code.starts_with("sh") {
             format!("1.{}", &normalized_code[2..])
         } else if normalized_code.starts_with("sz") {
@@ -945,26 +944,30 @@ async fn get_stock_minute_data(
                                 if let Some(arr) = trends.as_array() {
                                     let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
                                     
-                                    // 获取交易日期，用于构建完整时间戳
-                                    // 东财接口 tradeDate 格式通常为 "2023-10-27"
-                                    let trade_date = data.get("tradeDate").and_then(|v| v.as_str()).unwrap_or("");
+                                    // 获取交易日期并清洗格式
+                                    let raw_trade_date = data.get("tradeDate").and_then(|v| v.as_str()).unwrap_or("");
+                                    // 清洗 tradeDate: 只保留 YYYY-MM-DD 部分，防止包含时间或其他字符
+                                    let trade_date = if raw_trade_date.len() >= 10 {
+                                        raw_trade_date[..10].to_string()
+                                    } else {
+                                        raw_trade_date.to_string()
+                                    };
+
+                                    println!("Debug: tradeDate raw='{}', cleaned='{}'", raw_trade_date, trade_date);
 
                                     for item in arr {
                                         if let Some(s) = item.as_str() {
                                             let parts: Vec<&str> = s.split(',').collect();
-                                            // 格式: 时间,当前价,均价,成交量(手),成交额(元)
                                             // f51:时间 (HH:MM), f52:价格, f53:均价, f54:成交量, f55:成交额
                                             if parts.len() >= 5 {
-                                                let time_str_raw = parts[0].trim(); // HH:MM
+                                                let time_str_raw = parts[0].trim(); 
                                                 let price = parts[1].parse::<f64>().unwrap_or(0.0);
                                                 let avg_price = parts[2].parse::<f64>().unwrap_or(0.0);
-                                                let volume = parts[3].parse::<f64>().unwrap_or(0.0); // 手
+                                                let volume = parts[3].parse::<f64>().unwrap_or(0.0); 
                                                 
-                                                // 修复：构建标准时间字符串 "YYYY-MM-DD HH:mm"
-                                                // Lightweight Charts 支持此格式
+                                                // 修复：构建严格的标准时间字符串 "YYYY-MM-DD HH:mm"
                                                 let full_time = if !trade_date.is_empty() && !time_str_raw.is_empty() {
-                                                    // 确保 time_str_raw 是 HH:MM 格式，防止包含秒或其他字符
-                                                    // 东财通常返回 "09:30", "10:00" 等
+                                                    // 只取前5位字符作为 HH:MM，防止包含秒数
                                                     let clean_time = if time_str_raw.len() >= 5 {
                                                         time_str_raw[..5].to_string()
                                                     } else {
@@ -972,7 +975,7 @@ async fn get_stock_minute_data(
                                                     };
                                                     format!("{} {}", trade_date, clean_time)
                                                 } else if !time_str_raw.is_empty() {
-                                                    // 兜底：如果拿不到交易日期，尝试使用今天
+                                                    // 如果没有 tradeDate，使用当前日期（仅在极端情况下）
                                                     let today = chrono::Local::now().format("%Y-%m-%d");
                                                     let clean_time = if time_str_raw.len() >= 5 {
                                                         time_str_raw[..5].to_string()
@@ -981,7 +984,7 @@ async fn get_stock_minute_data(
                                                     };
                                                     format!("{} {}", today, clean_time)
                                                 } else {
-                                                    continue; // 跳过无效数据
+                                                    continue; 
                                                 };
 
                                                 minute_data.push(MinuteDataPoint {
@@ -995,6 +998,7 @@ async fn get_stock_minute_data(
                                             }
                                         }
                                     }
+                                    println!("Debug: Parsed {} minute data points for {}", minute_data.len(), normalized_code);
                                     return Json(json!({
                                         "status": "success",
                                         "data": minute_data
