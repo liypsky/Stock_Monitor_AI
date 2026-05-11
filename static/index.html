@@ -1284,6 +1284,7 @@
                 });
 
                 // 使用 BaselineSeries 实现同花顺双色效果
+                let mainSeries = null;
                 if (typeof LightweightCharts.BaselineSeries !== 'undefined') {
                     const baselineSeries = dayPriceChart.addBaselineSeries({
                         baseValue: { type: 'price', price: preClose },
@@ -1297,6 +1298,7 @@
                         lastValueVisible: true,
                     });
                     baselineSeries.setData(baselineData);
+                    mainSeries = baselineSeries;
                 } else {
                     // 降级方案：单色 AreaSeries
                     const lastPrice = lineData.length > 0 ? lineData[lineData.length - 1].value : preClose;
@@ -1314,6 +1316,19 @@
                         lastValueVisible: true,
                     });
                     areaSeries.setData(lineData);
+                    mainSeries = areaSeries;
+                }
+
+                // 新增：添加昨收价黄色横线
+                if (mainSeries && preClose > 0) {
+                    mainSeries.createPriceLine({
+                        price: preClose,
+                        color: '#facc15', // 黄色
+                        lineWidth: 1,
+                        lineStyle: LightweightCharts.LineStyle.Dashed, // 虚线风格，区分于走势
+                        axisLabelVisible: true,
+                        title: '昨收',
+                    });
                 }
 
                 // 创建分时成交量图 (下方图，显示时间轴)
