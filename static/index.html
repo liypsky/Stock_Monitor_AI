@@ -68,11 +68,17 @@
         .chart-tab.active { background: var(--primary); color: white; }
         .chart-container { height: 400px; margin-top: 20px; display: flex; flex-direction: column; gap: 5px; }
         /* 新增：分时图上下布局样式 */
-        .chart-wrapper { position: relative; width: 100%; }
+        .chart-wrapper { position: relative; width: 100%; height: 100%; overflow: hidden; }
         #chart-container-day .chart-wrapper:first-child { height: 300px; }
         #chart-container-day .chart-wrapper:last-child { height: 100px; }
         #chart-container-k .chart-wrapper:first-child { height: 300px; }
         #chart-container-k .chart-wrapper:last-child { height: 100px; }
+        
+        /* 新增：确保图表内部 div 填满 wrapper */
+        #chart-price-div, #chart-volume-div, #chart-k-price-div, #chart-k-volume-div {
+            width: 100%;
+            height: 100%;
+        }
         
         #index-input-area { display: none; margin-bottom: 15px; background:#fff; padding:10px; border-radius:8px; border: 1px solid #eee; }
         .loading-text { color: #999; font-style: italic; }
@@ -1019,19 +1025,23 @@
                 kContainer.style.display = 'none';
                 if (resetBtn) resetBtn.style.display = 'none';
                 
-                // 修改：增加延时至 100ms，确保 display:block 后浏览器完成重排
-                setTimeout(() => {
-                    renderChart(type);
-                }, 100);
+                // 修改：使用 requestAnimationFrame 确保 DOM 渲染完成后获取尺寸
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        renderChart(type);
+                    });
+                });
             } else {
                 dayContainer.style.display = 'none';
                 kContainer.style.display = 'block';
                 if (resetBtn) resetBtn.style.display = 'block';
                 
-                // 修改：增加延时至 100ms
-                setTimeout(() => {
-                    renderChart(type);
-                }, 100);
+                // 修改：使用 requestAnimationFrame 确保 DOM 渲染完成后获取尺寸
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        renderChart(type);
+                    });
+                });
             }
         }
 
@@ -1077,30 +1087,59 @@
             volumeContainer.innerHTML = '';
 
             // 强制触发重排以获取最新尺寸
-            void priceContainer.offsetWidth;
-            void volumeContainer.offsetWidth;
+            void priceContainer.offsetHeight;
+            void volumeContainer.offsetHeight;
 
             const pWidth = priceContainer.clientWidth;
             const pHeight = priceContainer.clientHeight;
             const vWidth = volumeContainer.clientWidth;
             const vHeight = volumeContainer.clientHeight;
 
-            // 修改：如果尺寸为0，延迟重试，最多重试5次
+            console.log(`Chart container size: Price(${pWidth}x${pHeight}), Volume(${vWidth}x${vHeight})`);
+
+            // 优化：如果尺寸为0，使用 ResizeObserver 等待容器获得有效尺寸
             if (pWidth === 0 || pHeight === 0 || vWidth === 0 || vHeight === 0) {
-                console.warn(`Chart container size is 0 (W:${pWidth}, H:${pHeight}), retrying...`);
-                // 使用闭包变量记录重试次数，避免无限递归
-                if (!window._retryCount) window._retryCount = 0;
-                if (window._retryCount < 5) {
-                    window._retryCount++;
-                    setTimeout(renderDayChart, 100);
+                console.warn(`Chart container size is 0, waiting for ResizeObserver...`);
+                
+                // 创建一个一次性使用的 ResizeObserver
+                const observer = new ResizeObserver(entries => {
+                    for (let entry of entries) {
+                        const { width, height } = entry.contentRect;
+                        // 检查价格图容器是否获得了有效尺寸
+                        if (width > 0 && height > 0) {
+                            // 断开观察，避免重复触发
+                            observer.disconnect();
+                            console.log("Chart container resized, rendering now...");
+                            // 重新调用渲染函数，此时尺寸应已正常
+                            renderDayChart();
+                            break;
+                        }
+                    }
+                });
+
+                // 开始观察价格图容器的父元素，因为子元素可能没有尺寸
+                const parentWrapper = priceContainer.parentElement;
+                if (parentWrapper) {
+                    observer.observe(parentWrapper);
                 } else {
-                    console.error("Chart container size remains 0 after retries.");
-                    priceContainer.innerText = "图表容器尺寸异常，请尝试刷新页面";
-                    window._retryCount = 0;
+                    observer.observe(priceContainer);
                 }
+                
+                // 设置一个超时保护，防止无限等待（例如容器永远不显示）
+                setTimeout(() => {
+                    observer.disconnect();
+                    // 再次检查，如果还是0，则显示错误
+                    if (priceContainer.clientWidth === 0 || priceContainer.clientHeight === 0) {
+                         priceContainer.innerText = "图表容器尺寸异常，请尝试刷新页面或重新打开详情";
+                         priceContainer.style.color = "#999";
+                         priceContainer.style.textAlign = "center";
+                         priceContainer.style.paddingTop = "20px";
+                         console.error("Chart container remains 0 size after timeout");
+                    }
+                }, 2000); // 2秒超时
+
                 return;
             }
-            window._retryCount = 0; // 重置计数器
 
             try {
                 // 获取分时数据
@@ -1128,6 +1167,9 @@
                         let closePrice = item.close;
                         if (!closePrice || closePrice <= 0) closePrice = item.price;
                         if (!closePrice || closePrice <= 0) closePrice = item.open;
+
+
+
                         
                         if (!closePrice || closePrice <= 0) return;
 
@@ -1351,6 +1393,41 @@
             }
 
             try {
+                // 强制重排
+                void priceContainer.offsetHeight;
+                void volumeContainer.offsetHeight;
+
+                // 获取容器实际尺寸，确保不为0
+                const width = priceContainer.clientWidth;
+                const height = priceContainer.clientHeight;
+                const volWidth = volumeContainer.clientWidth;
+                const volHeight = volumeContainer.clientHeight;
+
+                // 如果尺寸为0，同样使用 ResizeObserver
+                if (width === 0 || height === 0 || volWidth === 0 || volHeight === 0) {
+                     console.warn("[KChart] Container size is 0, waiting for ResizeObserver...");
+                     const observer = new ResizeObserver(entries => {
+                         for (let entry of entries) {
+                             if (entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+                                 observer.disconnect();
+                                 renderKChart(type);
+                                 break;
+                             }
+                         }
+                     });
+                     const parentWrapper = priceContainer.parentElement;
+                     if (parentWrapper) observer.observe(parentWrapper);
+                     else observer.observe(priceContainer);
+                     
+                     setTimeout(() => {
+                         observer.disconnect();
+                         if (priceContainer.clientWidth === 0) {
+                             priceContainer.innerText = "图表容器尺寸异常";
+                         }
+                     }, 2000);
+                     return;
+                }
+
                 const candleData = [];
                 const volumeData = [];
 
@@ -1385,13 +1462,6 @@
                 if (candleData.length === 0) {
                     throw new Error("Invalid data format");
                 }
-
-                // 获取容器实际尺寸，确保不为0
-                const width = priceContainer.clientWidth || 600;
-                const height = priceContainer.clientHeight || 300;
-                const volWidth = volumeContainer.clientWidth || 600;
-                const volHeight = volumeContainer.clientHeight || 100;
-
 
                 // 创建K线主图
                 kLinePriceChart = LightweightCharts.createChart(priceContainer, {
