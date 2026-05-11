@@ -1019,19 +1019,19 @@
                 kContainer.style.display = 'none';
                 if (resetBtn) resetBtn.style.display = 'none';
                 
-                // 新增：确保 DOM 渲染完成后再生成图表，避免尺寸获取为 0
-                requestAnimationFrame(() => {
+                // 修改：增加延时至 100ms，确保 display:block 后浏览器完成重排
+                setTimeout(() => {
                     renderChart(type);
-                });
+                }, 100);
             } else {
                 dayContainer.style.display = 'none';
                 kContainer.style.display = 'block';
                 if (resetBtn) resetBtn.style.display = 'block';
                 
-                // 新增：确保 DOM 渲染完成后再生成图表
-                requestAnimationFrame(() => {
+                // 修改：增加延时至 100ms
+                setTimeout(() => {
                     renderChart(type);
-                });
+                }, 100);
             }
         }
 
@@ -1072,19 +1072,38 @@
                 dayVolumeChart = null;
             }
 
-            // 清空容器内容，防止残留文本
+            // 清空容器内容
             priceContainer.innerHTML = '';
             volumeContainer.innerHTML = '';
 
-            // 检查容器尺寸，如果为0则延迟重试
-            if (priceContainer.clientWidth === 0 || priceContainer.clientHeight === 0) {
-                console.warn("Chart container has zero size, retrying in 100ms...");
-                setTimeout(renderDayChart, 100);
+            // 强制触发重排以获取最新尺寸
+            void priceContainer.offsetWidth;
+            void volumeContainer.offsetWidth;
+
+            const pWidth = priceContainer.clientWidth;
+            const pHeight = priceContainer.clientHeight;
+            const vWidth = volumeContainer.clientWidth;
+            const vHeight = volumeContainer.clientHeight;
+
+            // 修改：如果尺寸为0，延迟重试，最多重试5次
+            if (pWidth === 0 || pHeight === 0 || vWidth === 0 || vHeight === 0) {
+                console.warn(`Chart container size is 0 (W:${pWidth}, H:${pHeight}), retrying...`);
+                // 使用闭包变量记录重试次数，避免无限递归
+                if (!window._retryCount) window._retryCount = 0;
+                if (window._retryCount < 5) {
+                    window._retryCount++;
+                    setTimeout(renderDayChart, 100);
+                } else {
+                    console.error("Chart container size remains 0 after retries.");
+                    priceContainer.innerText = "图表容器尺寸异常，请尝试刷新页面";
+                    window._retryCount = 0;
+                }
                 return;
             }
+            window._retryCount = 0; // 重置计数器
 
             try {
-                // 修改：增加 datalen 以获取更长时间跨度的数据，并确保参数正确
+                // 获取分时数据
                 const res = await fetch(`/api/stock_minute_data?code=${currentDetailSymbol}&datalen=240`);
                 const result = await res.json();
                 
@@ -1092,55 +1111,41 @@
 
                 let lineData = [];
                 let volumeData = [];
-                let baselineData = []; // 新增：用于 BaselineSeries 的基准数据
+                let baselineData = []; 
 
-                // 优化：更严格的数据校验
+                // 数据校验与转换
                 if (result.status === 'success' && result.data && Array.isArray(result.data) && result.data.length > 0) {
-                    // 获取昨收价，用于判断红绿柱和基准线
                     let preClose = 0;
                     if (currentDetailData && currentDetailData.pre_close > 0) {
                         preClose = currentDetailData.pre_close;
                     } else {
-                        // 如果详情数据缺失，尝试使用分时数据的第一个开盘价作为参考
                         preClose = result.data[0].open || result.data[0].price || 0;
                     }
 
-                    result.data.forEach((item, index) => {
+                    result.data.forEach((item) => {
                         if (!item.time) return;
 
                         let closePrice = item.close;
-                        if (!closePrice || closePrice <= 0) {
-                            closePrice = item.price;
-                        }
-                        if (!closePrice || closePrice <= 0) {
-                            closePrice = item.open;
-                        }
+                        if (!closePrice || closePrice <= 0) closePrice = item.price;
+                        if (!closePrice || closePrice <= 0) closePrice = item.open;
                         
                         if (!closePrice || closePrice <= 0) return;
 
-                        // 格式化时间，确保 Lightweight Charts 能识别
+                        // 标准化时间格式：确保包含日期部分，Lightweight Charts v4 需要完整的时间字符串
+                        // 假设后端返回 "YYYY-MM-DD HH:mm" 或 "HH:mm"
                         let timeStr = item.time.trim();
-                        // 东财返回格式通常为 "YYYY-MM-DD HH:MM"，Lightweight Charts 支持
-                        // 如果是其他格式，可能需要转换，但东财通常标准
-                        
+                        if (timeStr.length === 5) {
+                            // 如果只有 HH:mm，补充当天日期
+                            const today = new Date().toISOString().split('T')[0];
+                            timeStr = `${today} ${timeStr}`;
+                        }
+
                         let vol = item.volume || 0;
                         if (vol < 0) vol = 0;
 
                         lineData.push({ time: timeStr, value: closePrice });
-                        
-                        // 新增：构建 BaselineSeries 数据
-                        // BaselineSeries 需要 topValue (基准线值) 和 value (当前值)
-                        // 但 Lightweight Charts v4 的 BaselineSeries 用法略有不同，它通常用于比较两个系列
-                        // 更简单的同花顺效果实现：使用 AreaSeries 并根据价格与昨收关系动态改变颜色较难
-                        // 替代方案：使用 LineSeries 画价格，然后用两个 AreaSeries 覆盖？太复杂。
-                        // 最佳实践：使用 BaselineSeries，设置 baseValue 为 preClose。
-                        // 注意：BaselineSeries 在 v4 中叫 BaselineSeries，需要 import 或检查可用性
-                        // 如果不可用，回退到单色 AreaSeries。
-                        
-                        // 这里我们使用 BaselineSeries 的逻辑准备数据
                         baselineData.push({ time: timeStr, value: closePrice });
 
-                        // 确定颜色：对比昨收价 (PreClose)
                         const isUp = preClose > 0 ? (closePrice >= preClose) : true; 
                         
                         volumeData.push({
@@ -1152,7 +1157,6 @@
                 }
 
                 if (lineData.length === 0) {
-                    // 优化提示信息
                     let msg = "暂无分时数据";
                     if (result.status === 'error') {
                         msg = "数据获取失败: " + (result.msg || "未知错误");
@@ -1189,13 +1193,13 @@
                 if (currentDetailData && currentDetailData.pre_close > 0) {
                     preClose = currentDetailData.pre_close;
                 } else if (lineData.length > 0) {
-                    preClose = lineData[0].value; //  fallback
+                    preClose = lineData[0].value; 
                 }
 
                 // 创建分时价格图
                 dayPriceChart = LightweightCharts.createChart(priceContainer, {
-                    width: priceContainer.clientWidth,
-                    height: priceContainer.clientHeight,
+                    width: pWidth,
+                    height: pHeight,
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
                     grid: { vertLines: { color: '#f0f0f0' }, horzLines: { color: '#f0f0f0' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -1210,8 +1214,7 @@
                     },
                 });
 
-                // 尝试使用 BaselineSeries 实现同花顺双色效果
-                // 如果 LightweightCharts.BaselineSeries 存在
+                // 使用 BaselineSeries 实现同花顺双色效果
                 if (typeof LightweightCharts.BaselineSeries !== 'undefined') {
                     const baselineSeries = dayPriceChart.addBaselineSeries({
                         baseValue: { type: 'price', price: preClose },
@@ -1246,8 +1249,8 @@
 
                 // 创建分时成交量图
                 dayVolumeChart = LightweightCharts.createChart(volumeContainer, {
-                    width: volumeContainer.clientWidth,
-                    height: volumeContainer.clientHeight,
+                    width: vWidth,
+                    height: vHeight,
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
                     grid: { vertLines: { visible: false }, horzLines: { visible: false } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -1276,31 +1279,19 @@
                         dayVolumeChart.timeScale().setVisibleLogicalRange(range);
                     }
                 });
+
                 dayVolumeChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
                     if (range) {
                         dayPriceChart.timeScale().setVisibleLogicalRange(range);
                     }
                 });
 
-                // 响应式调整大小
-                new ResizeObserver(entries => {
-                    if (entries.length === 0 || entries[0].target !== priceContainer) { return; }
-                    const newRect = entries[0].contentRect;
-                    if (newRect.width > 0 && newRect.height > 0) {
-                        dayPriceChart.applyOptions({ height: newRect.height, width: newRect.width });
-                        dayVolumeChart.applyOptions({ height: volumeContainer.clientHeight, width: newRect.width });
-                    }
-                }).observe(priceContainer);
-
-                setTimeout(() => {
-                    if (dayPriceChart && dayVolumeChart) {
-                        dayPriceChart.timeScale().fitContent();
-                    }
-                }, 50);
-
-            } catch (e) {
-                console.error("Render day chart error:", e);
-                priceContainer.innerText = "图表渲染错误: " + e.message;
+                // 确保时间轴内容完全显示
+                dayPriceChart.timeScale().fitContent();
+                dayVolumeChart.timeScale().fitContent();
+            } catch (error) {
+                console.error("Error rendering day chart:", error);
+                priceContainer.innerText = "图表渲染错误: " + error.message;
             }
         }
 
@@ -1551,6 +1542,7 @@
                     
                     // 格式化数值
                     const fmt = (num) => num.toFixed(2);
+
                     const open = fmt(currentCandle.open);
                     const high = fmt(currentCandle.high);
                     const low = fmt(currentCandle.low);

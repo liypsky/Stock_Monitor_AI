@@ -401,124 +401,163 @@ async fn get_stock_money_flow(
         };
 
         // 策略调整：
-        // 1. 优先使用 daykline 接口 (lmt=1)，因为它返回的是确定的每日汇总数据，结构稳定。
-        // 2. 备用 realtime 接口，用于获取盘中实时变动，但解析逻辑较复杂。
+        // 1. 优先使用 realtime 接口，获取盘中实时资金流向，响应更快且数据通常更可用。
+        // 2. 备用 daykline 接口，用于获取每日汇总数据，作为实时接口失败时的兜底。
         
         let urls = vec![
-            // 首选：日K线资金流向 (取最近1天)
-            format!(
-                "http://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?secid={}&lmt=1&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65&ut=b2884a393a59ad64002292a3e90d46a5",
-                secid
-            ),
-            // 备用：实时资金流向
+            // 首选：实时资金流向
             format!(
                 "http://push2.eastmoney.com/api/qt/stock/fflow/realtime/get?secid={}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65&ut=b2884a393a59ad64002292a3e90d46a5",
+                secid
+            ),
+            // 备用：日K线资金流向 (取最近1天)
+            format!(
+                "http://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?secid={}&lmt=1&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65&ut=b2884a393a59ad64002292a3e90d46a5",
                 secid
             )
         ];
 
+        // 修复：构建更健壮的 Client，解决 "connection closed before message completed" 错误
+        // 1. pool_max_idle_per_host(0): 禁用连接池空闲连接重用
+        // 2. http1_only(): 强制使用 HTTP/1.1
+        // 3. Connection: close header: 强制服务端在响应后关闭连接，彻底避免复用问题
         let client = reqwest::Client::builder()
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
                 headers.insert("User-Agent", reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
                 headers.insert("Referer", reqwest::header::HeaderValue::from_static("http://quote.eastmoney.com/"));
                 headers.insert("Accept", reqwest::header::HeaderValue::from_static("*/*"));
+                headers.insert("Accept-Language", reqwest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
+                // 关键修复：强制关闭连接，不保持 Keep-Alive
+                headers.insert("Connection", reqwest::header::HeaderValue::from_static("close"));
                 headers
             })
+            .pool_max_idle_per_host(0) // 关键修复：禁用连接池重用
+            .http1_only()              // 关键修复：强制 HTTP/1.1
+            .timeout(std::time::Duration::from_secs(15)) // 增加超时时间至15秒
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
         for (idx, url) in urls.iter().enumerate() {
-            match client.get(url).send().await {
-                Ok(resp) => {
-                    if let Ok(text) = resp.text().await {
-                        // 改进解析逻辑：查找第一个 '{' 和最后一个 '}'
-                        if let Some(start_idx) = text.find('{') {
-                            if let Some(end_idx) = text.rfind('}') {
-                                let json_str = &text[start_idx..=end_idx];
-                                
-                                if let Ok(root) = serde_json::from_str::<Value>(json_str) {
-                                    if let Some(data) = root.get("data") {
-                                        // 检查 data 是否为 null
-                                        if data.is_null() {
-                                            eprintln!("⚠️ EastMoney MoneyFlow data is null for {} (Attempt {}). This usually means the stock is suspended or no data available today.", normalized_code, idx + 1);
-                                            continue; // 尝试下一个接口
-                                        }
+            // 增加简单重试逻辑，应对偶尔的网络抖动
+            let mut retries = 2;
+            let mut success = false;
+            let mut last_error = None;
 
-                                        // --- 解析逻辑 ---
-                                        
-                                        // 情况 A: daykline 接口 (数据结构: data.klines[0] = "date,main,super,large,medium,small...")
-                                        if let Some(klines) = data.get("klines") {
-                                            if let Some(arr) = klines.as_array() {
-                                                if !arr.is_empty() {
-                                                    if let Some(latest_str) = arr.first().and_then(|v| v.as_str()) {
-                                                        let parts: Vec<&str> = latest_str.split(',').collect();
-                                                        // 确保有足够的字段: Date, MainNet, SuperLarge, Large, Medium, Small
-                                                        if parts.len() > 5 {
-                                                            let main_net = parts[1].parse::<f64>().unwrap_or(0.0);
-                                                            let super_large = parts[2].parse::<f64>().unwrap_or(0.0);
-                                                            let large = parts[3].parse::<f64>().unwrap_or(0.0);
-                                                            let medium = parts[4].parse::<f64>().unwrap_or(0.0);
-                                                            let small = parts[5].parse::<f64>().unwrap_or(0.0);
-                                                            
-                                                            let retail = small; 
+            while retries >= 0 && !success {
+                match client.get(url).send().await {
+                    Ok(resp) => {
+                        if let Ok(text) = resp.text().await {
+                            // 改进解析逻辑：查找第一个 '{' 和最后一个 '}'
+                            if let Some(start_idx) = text.find('{') {
+                                if let Some(end_idx) = text.rfind('}') {
+                                    let json_str = &text[start_idx..=end_idx];
+                                    
+                                    if let Ok(root) = serde_json::from_str::<Value>(json_str) {
+                                        if let Some(data) = root.get("data") {
+                                            // 检查 data 是否为 null
+                                            if data.is_null() {
+                                                eprintln!("⚠️ EastMoney MoneyFlow data is null for {} (Attempt {}). This usually means the stock is suspended or no data available today.", normalized_code, idx + 1);
+                                                break; // 数据为null，重试无用，尝试下一个接口
+                                            }
 
-                                                            return Json(json!({
-                                                                "status": "success",
-                                                                "data": {
-                                                                    "main_net": main_net,
-                                                                    "super_large": super_large,
-                                                                    "large": large,
-                                                                    "medium": medium,
-                                                                    "small": small,
-                                                                    "retail": retail
-                                                                }
-                                                            }));
+                                            // --- 解析逻辑 ---
+                                            
+                                            // 情况 A: realtime 接口 (数据结构: data 直接包含 f62, f63 等字段)
+                                            // 注意：realtime 接口返回结构可能因版本而异，通常 f62=主力, f63=超大, f64=大单, f65=中单, f66=小单
+                                            // 这里尝试直接读取 data 下的字段
+                                            if data.get("f62").is_some() {
+                                                let main_net = data.get("f62").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                                let super_large = data.get("f63").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                                let large = data.get("f64").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                                let medium = data.get("f65").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                                let small = data.get("f66").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                                
+                                                // 有些 realtime 接口返回的是累计值或瞬时值，单位可能不同，这里假设单位一致(元)
+                                                // 如果数据全为0，可能是停牌或未开盘
+                                                
+                                                return Json(json!({
+                                                                    "status": "success",
+                                                                    "data": {
+                                                                        "main_net": main_net,
+                                                                        "super_large": super_large,
+                                                                        "large": large,
+                                                                        "medium": medium,
+                                                                        "small": small,
+                                                                        "retail": small
+                                                                    }
+                                                                }));
+                                            }
+
+                                            // 情况 B: daykline 接口 (数据结构: data.klines[0] = "date,main,super,large,medium,small...")
+                                            if let Some(klines) = data.get("klines") {
+                                                if let Some(arr) = klines.as_array() {
+                                                    if !arr.is_empty() {
+                                                        if let Some(latest_str) = arr.first().and_then(|v| v.as_str()) {
+                                                            let parts: Vec<&str> = latest_str.split(',').collect();
+                                                            // 确保有足够的字段: Date, MainNet, SuperLarge, Large, Medium, Small
+                                                            if parts.len() > 5 {
+                                                                let main_net = parts[1].parse::<f64>().unwrap_or(0.0);
+                                                                let super_large = parts[2].parse::<f64>().unwrap_or(0.0);
+                                                                let large = parts[3].parse::<f64>().unwrap_or(0.0);
+                                                                let medium = parts[4].parse::<f64>().unwrap_or(0.0);
+                                                                let small = parts[5].parse::<f64>().unwrap_or(0.0);
+                                                                
+                                                                let retail = small; 
+
+                                                                return Json(json!({
+                                                                    "status": "success",
+                                                                    "data": {
+                                                                        "main_net": main_net,
+                                                                        "super_large": super_large,
+                                                                        "large": large,
+                                                                        "medium": medium,
+                                                                        "small": small,
+                                                                        "retail": retail
+                                                                    }
+                                                                }));
+                                                            }
                                                         }
                                                     }
                                                 }
-                                            }
-                                        } 
-                                        
-                                        // 情况 B: realtime 接口 (数据结构: data 直接包含 f62, f63 等字段，或者在 lists 中)
-                                        // 注意：realtime 接口返回结构可能因版本而异，通常 f62=主力, f63=超大, f64=大单, f65=中单, f66=小单
-                                        // 这里尝试直接读取 data 下的字段
-                                        else if data.get("f62").is_some() {
-                                            let main_net = data.get("f62").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                            let super_large = data.get("f63").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                            let large = data.get("f64").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                            let medium = data.get("f65").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                            let small = data.get("f66").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                            
-                                            // 有些 realtime 接口返回的是累计值或瞬时值，单位可能不同，这里假设单位一致(元)
-                                            // 如果数据全为0，可能是停牌或未开盘
-                                            
-                                            return Json(json!({
-                                                                "status": "success",
-                                                                "data": {
-                                                                    "main_net": main_net,
-                                                                    "super_large": super_large,
-                                                                    "large": large,
-                                                                    "medium": medium,
-                                                                    "small": small,
-                                                                    "retail": small
-                                                                }
-                                                            }));
+                                            } 
+                                        } else {
+                                            eprintln!("EastMoney MoneyFlow no data field");
                                         }
                                     } else {
-                                        eprintln!("EastMoney MoneyFlow no data field");
+                                        eprintln!("Failed to parse JSON from EastMoney: {}", json_str.chars().take(100).collect::<String>());
                                     }
-                                } else {
-                                    eprintln!("Failed to parse JSON from EastMoney: {}", json_str.chars().take(100).collect::<String>());
                                 }
                             }
                         }
+                        success = true; // 请求成功且处理完毕（无论是否有数据），跳出重试循环
+                    }
+                    Err(e) => {
+                        last_error = Some(e);
+                        // 详细记录错误类型，帮助诊断
+                        let error_type = if last_error.as_ref().unwrap().is_timeout() {
+                            "Timeout"
+                        } else if last_error.as_ref().unwrap().is_connect() {
+                            "Connect"
+                        } else if last_error.as_ref().unwrap().is_request() {
+                            "Request"
+                        } else {
+                            "Unknown"
+                        };
+                        eprintln!("❌ Fetch money flow error (Type: {}, Attempt {}, Retry {}): {:?} for URL: {}", error_type, idx + 1, 2 - retries, last_error.as_ref().unwrap(), url);
+                        
+                        retries -= 1;
+                        if retries >= 0 {
+                            // 短暂等待后重试，增加等待时间以避开可能的限流
+                            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                        }
                     }
                 }
-                Err(e) => {
-                    eprintln!("Fetch money flow error (Attempt {}): {}", idx + 1, e);
-                    continue;
-                }
+            }
+            
+            // 如果当前接口所有重试都失败，继续尝试下一个接口
+            if let Some(e) = last_error {
+                 eprintln!("⚠️ Interface {} failed after retries: {:?}", idx + 1, e);
             }
         }
         
