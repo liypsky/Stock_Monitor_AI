@@ -441,7 +441,7 @@ async fn get_stock_money_flow(
                                     if let Some(data) = root.get("data") {
                                         // 检查 data 是否为 null
                                         if data.is_null() {
-                                            eprintln!("EastMoney MoneyFlow data is null for {} (Attempt {})", normalized_code, idx + 1);
+                                            eprintln!("⚠️ EastMoney MoneyFlow data is null for {} (Attempt {}). This usually means the stock is suspended or no data available today.", normalized_code, idx + 1);
                                             continue; // 尝试下一个接口
                                         }
 
@@ -494,16 +494,16 @@ async fn get_stock_money_flow(
                                             // 如果数据全为0，可能是停牌或未开盘
                                             
                                             return Json(json!({
-                                                "status": "success",
-                                                "data": {
-                                                    "main_net": main_net,
-                                                    "super_large": super_large,
-                                                    "large": large,
-                                                    "medium": medium,
-                                                    "small": small,
-                                                    "retail": small
-                                                }
-                                            }));
+                                                                "status": "success",
+                                                                "data": {
+                                                                    "main_net": main_net,
+                                                                    "super_large": super_large,
+                                                                    "large": large,
+                                                                    "medium": medium,
+                                                                    "small": small,
+                                                                    "retail": small
+                                                                }
+                                                            }));
                                         }
                                     } else {
                                         eprintln!("EastMoney MoneyFlow no data field");
@@ -524,8 +524,9 @@ async fn get_stock_money_flow(
         
         // 如果所有接口都失败
         Json(json!({
-            "status": "error",
-            "msg": "暂无资金流向数据"
+            "status": "success",
+            "msg": "暂无资金流向数据",
+            "data": null
         }))
     } else {
         Json(json!({"status": "error"}))
@@ -902,148 +903,114 @@ fn parse_sina_data(raw_text: &str) -> Vec<StockInfo> {
     results
 }
 
-// 新增：辅助函数，用于获取分时数据，避免闭包所有权问题
-async fn fetch_minute_data_from_sina(normalized_code: &str, datalen: usize) -> Option<Vec<MinuteDataPoint>> {
-    // 策略调整：直接使用新浪财经的 getKLineData 接口，该接口相对稳定
-    // 注意：该接口返回的是 JSONP 格式，需要解析
+// 新增：从东方财富获取分时数据
+async fn fetch_minute_data_from_eastmoney(normalized_code: &str) -> Option<Vec<MinuteDataPoint>> {
+    // 东方财富 secid 格式: 市场代码.股票代码
+    let secid = if normalized_code.starts_with("sh") {
+        format!("1.{}", &normalized_code[2..])
+    } else if normalized_code.starts_with("sz") {
+        format!("0.{}", &normalized_code[2..])
+    } else if normalized_code.starts_with("bj") {
+        format!("0.{}", &normalized_code[2..]) 
+    } else {
+        format!("0.{}", normalized_code)
+    };
+
+    // 接口说明：
+    // fields1: f1(f2?), f2... (通常不需要具体指定，默认即可)
+    // fields2: f51(时间), f52(开盘), f53(收盘), f54(最高), f55(最低), f56(成交量-手), f57(成交额-元), f58(均价?)
+    // 注意：东财分钟线接口返回的是累积成交量还是单分钟？通常是单分钟。
+    // URL: https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=1.600519&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&ndays=1
+    // ndays=1 表示获取当天数据
+    
+    // 修复：添加 ut 参数，这是东方财富接口必须的 token，否则可能返回空数据
     let url = format!(
-        "http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={}&scale=1&ma=5&datalen={}",
-        normalized_code, datalen
+        "https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&ndays=1&ut=b2884a393a59ad64002292a3e90d46a5",
+        secid
     );
 
-    println!("🔍 Fetching Minute Data from Sina: {}", url);
+    println!("🔍 Fetching Minute Data from EastMoney: {}", url);
 
     let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .default_headers({
             let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert(
-                "User-Agent", 
-                reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            );
-            headers.insert(
-                "Referer", 
-                reqwest::header::HeaderValue::from_static("https://finance.sina.com.cn/")
-            );
+            headers.insert("Referer", reqwest::header::HeaderValue::from_static("https://quote.eastmoney.com/"));
             headers
         })
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
-    // 尝试获取数据
-    if let Some(data) = try_fetch_minute_from_url(&client, &url, normalized_code).await {
-        return Some(data);
-    }
-
-    None
-}
-
-// 新增：通用的分时数据抓取逻辑 (适配 getKLineData 接口)
-async fn try_fetch_minute_from_url(client: &reqwest::Client, url: &str, normalized_code: &str) -> Option<Vec<MinuteDataPoint>> {
-    match client.get(url).send().await {
+    match client.get(&url).send().await {
         Ok(resp) => {
             if !resp.status().is_success() {
-                eprintln!("Fetch Minute Data HTTP Error: {} for {}", resp.status(), normalized_code);
+                eprintln!("Fetch EastMoney Minute HTTP Error: {} for {}", resp.status(), normalized_code);
                 return None;
             }
 
             if let Ok(text) = resp.text().await {
-                // 调试日志：打印原始响应的前500字符，帮助诊断 null 或格式问题
-                eprintln!("Raw Minute Response for {} (len={}): {}", normalized_code, text.len(), text.chars().take(500).collect::<String>());
+                // 调试日志
+                // eprintln!("Raw EastMoney Minute Response: {}", text.chars().take(200).collect::<String>());
 
-                if text.trim().is_empty() || text.trim() == "null" {
-                    eprintln!("⚠️ Minute data response is empty or null for {}", normalized_code);
-                    return None;
-                }
-                
-                // 解析逻辑：getKLineData 返回的是 JSONP 格式，例如:
-                // [{"day":"2023-10-27 10:00","open":10.0,"close":10.1,"volume":1000}, ...]
-                // 或者可能有回调函数包裹，如 callback([...])
-                
-                // 清理可能的非法字符和回调函数名
-                // 更稳健的清理：移除所有非 JSON 字符（除了 []{}:",.0-9eE 等）
-                // 简单策略：找到第一个 '[' 和最后一个 ']'
-                
-                let start_idx = text.find('[')?;
-                let end_idx = text.rfind(']')?;
-                
-                if start_idx >= end_idx {
-                    eprintln!("⚠️ Invalid JSON format for minute data (brackets mismatch): {}", normalized_code);
-                    return None;
-                }
+                if let Ok(root) = serde_json::from_str::<Value>(&text) {
+                    if let Some(data) = root.get("data") {
+                        if let Some(trends) = data.get("trends") {
+                            if let Some(arr) = trends.as_array() {
+                                let mut minutes: Vec<MinuteDataPoint> = Vec::new();
 
-                let json_str = &text[start_idx..=end_idx];
+                                for item in arr {
+                                    if let Some(line_str) = item.as_str() {
+                                        // 格式: "2023-10-27 09:30,10.00,10.00,10.00,10.00,100,1000000.00,10.00"
+                                        // f51:时间, f52:开盘, f53:收盘, f54:最高, f55:最低, f56:成交量(手), f57:成交额(元), f58:均价(可能是累计均价)
+                                        let parts: Vec<&str> = line_str.split(',').collect();
+                                        if parts.len() >= 8 {
+                                            let time_raw = parts[0];
+                                            // 时间格式转换: "2023-10-27 09:30" -> "YYYY-MM-DD HH:MM"
+                                            // Lightweight Charts 需要标准时间格式
+                                            let time_str = time_raw.to_string();
+                                            
+                                            let open = parts[1].parse::<f64>().unwrap_or(0.0);
+                                            let close = parts[2].parse::<f64>().unwrap_or(0.0);
+                                            let volume = parts[5].parse::<f64>().unwrap_or(0.0); // 手
+                                            let avg_price = parts[7].parse::<f64>().unwrap_or(0.0); // 东财返回的均价
 
-                match serde_json::from_str::<Vec<Value>>(json_str) {
-                    Ok(data_array) => {
-                        if data_array.is_empty() {
-                            eprintln!("⚠️ Parsed minute data array is empty for {}", normalized_code);
-                            return None;
-                        }
+                                            // 过滤无效数据
+                                            if close <= 0.0 {
+                                                continue;
+                                            }
 
-                        let mut minutes: Vec<MinuteDataPoint> = Vec::new();
-                        for item in data_array {
-                            // getKLineData 字段: day, open, close, high, low, volume
-                            let time_str = item.get("day").and_then(|v| v.as_str());
-                            
-                            if let Some(day) = time_str {
-                                // 简单校验时间格式，避免无效数据
-                                if day.len() < 5 { 
-                                    continue; 
+                                            minutes.push(MinuteDataPoint {
+                                                time: time_str,
+                                                price: close,
+                                                avg_price: if avg_price > 0.0 { avg_price } else { close },
+                                                volume: volume,
+                                                open: open,
+                                                close: close,
+                                            });
+                                        }
+                                    }
                                 }
                                 
-                                // 统一转换为 "YYYY-MM-DD HH:MM" 格式
-                                // 接口返回格式通常为: "2023-10-27 10:00" 或 "2023-10-27/10:00"
-                                let formatted_time = if day.contains('/') {
-                                    day.replace('/', " ")
-                                } else {
-                                    day.to_string()
-                                };
-                                
-                                let open = item.get("open").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                let close = item.get("close").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                let volume = item.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0); 
-                                
-                                let final_close = if close > 0.0 { close } else { open };
-
-                                if final_close <= 0.0 {
-                                    continue;
+                                if minutes.is_empty() {
+                                    eprintln!("⚠️ No valid minute data points parsed for {} from EastMoney", normalized_code);
+                                    return None;
                                 }
-
-                                minutes.push(MinuteDataPoint {
-                                    time: formatted_time,
-                                    price: final_close,
-                                    avg_price: 0.0, // 均价需前端或后端额外计算，此处暂置0，前端会重新计算
-                                    volume,
-                                    open,
-                                    close: final_close,
-                                });
+                                
+                                println!("✅ Successfully parsed {} minute data points for {} from EastMoney", minutes.len(), normalized_code);
+                                return Some(minutes);
                             }
                         }
-                        
-                        if minutes.is_empty() {
-                            eprintln!("⚠️ No valid minute data points parsed for {}", normalized_code);
-                            None
-                        } else {
-                            eprintln!("✅ Successfully parsed {} minute data points for {}", minutes.len(), normalized_code);
-                            Some(minutes)
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("JSON Parse Error for {}: {:?}, Text snippet: {}", normalized_code, e, json_str.chars().take(100).collect::<String>());
-                        None
                     }
                 }
-            } else {
-                eprintln!("Failed to read response text for {}", normalized_code);
-                None
+                eprintln!("Parse EastMoney Minute JSON Error for {}", normalized_code);
             }
         }
         Err(e) => {
-            eprintln!("Fetch Minute Data Network Error for {}: {}", normalized_code, e);
-            None
+            eprintln!("Fetch EastMoney Minute Network Error for {}: {}", normalized_code, e);
         }
     }
+    None
 }
 
 // 新增：获取分时历史数据
@@ -1054,12 +1021,10 @@ async fn get_stock_minute_data(
     if let Some(code) = params.get("code") {
         let normalized_code = normalize_stock_code(code);
         
-        // 1. 尝试获取当天数据 (240条)
-        if let Some(data) = fetch_minute_data_from_sina(&normalized_code, 240).await {
-            // 校准：如果数据极少（例如只有1-2条），可能是刚开盘或非交易时间噪音，但通常保留
-            // 如果完全没数据，进入下一步
+        // 1. 优先使用东方财富接口获取当天分时数据
+        if let Some(data) = fetch_minute_data_from_eastmoney(&normalized_code).await {
             if !data.is_empty() {
-                println!("Fetched {} minute data points for {} (Today)", data.len(), normalized_code);
+                println!("Fetched {} minute data points for {} (EastMoney)", data.len(), normalized_code);
                 return Json(json!({
                     "status": "success",
                     "data": data
@@ -1067,33 +1032,10 @@ async fn get_stock_minute_data(
             }
         }
 
-        // 2. 如果当天无数据（周末/节假日/未开盘），尝试获取最近1000条，并提取最近一个完整交易日
-        println!("No data for today, fetching history for {}...", normalized_code);
-        if let Some(history_data) = fetch_minute_data_from_sina(&normalized_code, 1000).await {
-            if !history_data.is_empty() {
-                // 策略：寻找最近的一个完整交易日。
-                // 简单策略：取最后240条。因为新浪返回的是正序（旧->新），最后的是最新的。
-                // 如果最后一条是今天的（即使没数据），前面的可能是昨天的。
-                // 更严谨的做法是按日期分组，但为了性能，取最后240条通常能覆盖最近一个完整交易日
-                
-                let len = history_data.len();
-                let start = if len > 240 { len - 240 } else { 0 };
-                let recent_data = history_data[start..].to_vec();
-                
-                // 再次校验：如果取出的数据中，第一条和最后一条日期跨度极大，可能包含多日，
-                // 但前端分时图通常只画一日。这里简化处理，直接返回最近片段。
-                // 若需严格单一日历日，需解析 time 中的日期部分进行截断。
-                // 鉴于需求“略过不显示”，如果最近240条里有数据，就显示。
-                
-                if !recent_data.is_empty() {
-                     println!("Fetched {} historical minute data points for {} (Last Trading Day)", recent_data.len(), normalized_code);
-                     return Json(json!({
-                        "status": "success",
-                        "data": recent_data
-                    }));
-                }
-            }
-        }
+        // 2. 如果东财失败，可以尝试降级方案（此处暂略，直接返回空）
+        // 以前是尝试获取历史数据，但分时图通常只看当天。
+        // 如果当天无数据（非交易时间），东财接口可能返回空或最后交易日数据，视接口行为而定。
+        // 如果需要展示最近交易日，逻辑会更复杂，这里保持简洁。
 
         println!("No minute data available for {}", normalized_code);
         // 返回空数组，前端将显示“暂无数据”

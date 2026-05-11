@@ -130,7 +130,7 @@
             margin: 2px 0; 
         }
         .mf-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
-        /* 删除: .mf-val { width: 80px; text-align: right; font-family: monospace; } */
+        /* Delete: .mf-val { width: 80px; text-align: right; font-family: monospace; } */
         .mf-val { 
             text-align: center; 
             font-family: monospace; 
@@ -159,9 +159,21 @@
         .tooltip-label { color: #666; margin-right: 5px; }
         .tooltip-val { font-weight: bold; color: #333; }
         .tooltip-date { border-bottom: 1px solid #eee; margin-bottom: 4px; padding-bottom: 2px; font-weight: bold; color: #333; }
+        
+        /* 修复：将误写在 style 标签外的阴影样式移回，并应用到容器 */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: #fff; /* 确保有背景色以便阴影可见 */
+            padding: 20px;    /* 保持内边距 */
+            border-radius: 8px; /* 圆角配合阴影更美观 */
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1); /* 修正后的阴影值 */
+        }
     </style>
 </head>
 <body>
+    <div class="container">
+
     <div class="container">
         <!-- 指数看板 -->
         <div class="section-header">
@@ -872,7 +884,10 @@
                     // 即使详情失败，也尝试加载资金流向，或者显示错误
                 }
 
-                // 2. 获取资金流向
+                // 2. 获取资金流向 (异步执行，不阻塞分时图渲染，分时图在 switchChart 中单独触发)
+                // 注意：loadDetailData 被 showDetail 调用，showDetail 最后调用了 switchChart('day')
+                // switchChart 会触发 renderDayChart，renderDayChart 会 fetch minute data
+                // 所以资金流向的失败不应影响分时图，除非 JS 执行出错。
                 try {
                     const mfRes = await fetch(`/api/stock_money_flow?code=${currentDetailSymbol}`);
                     const mfResult = await mfRes.json();
@@ -897,7 +912,7 @@
             
             // 处理错误状态
             if (!data) {
-                container.innerHTML = '<div style="text-align:center; color:#999; padding:10px;">数据加载失败</div>';
+                container.innerHTML = '<div style="text-align:center; color:#999; padding:10px;">暂无资金数据</div>';
                 return;
             }
 
@@ -905,7 +920,7 @@
             if (data.msg) {
                  // 修改：区分“无数据”和“获取失败”
                  if (data.msg.includes("暂无") || data.msg.includes("null")) {
-                     container.innerHTML = '<div style="text-align:center; color:#999; padding:10px;">暂无今日资金数据</div>';
+                     container.innerHTML = '<div style="text-align:center; color:#999; padding:10px;">今日暂无资金流向数据</div>';
                  } else {
                      container.innerHTML = `<div style="text-align:center; color:#999; padding:10px;">${data.msg}</div>`;
                  }
@@ -1003,13 +1018,21 @@
                 dayContainer.style.display = 'block';
                 kContainer.style.display = 'none';
                 if (resetBtn) resetBtn.style.display = 'none';
+                
+                // 新增：确保 DOM 渲染完成后再生成图表，避免尺寸获取为 0
+                requestAnimationFrame(() => {
+                    renderChart(type);
+                });
             } else {
                 dayContainer.style.display = 'none';
                 kContainer.style.display = 'block';
                 if (resetBtn) resetBtn.style.display = 'block';
+                
+                // 新增：确保 DOM 渲染完成后再生成图表
+                requestAnimationFrame(() => {
+                    renderChart(type);
+                });
             }
-            
-            renderChart(type);
         }
 
         // 新增：重置K线图缩放 (Lightweight Charts 自带重置功能，此处可留空或实现自定义逻辑)
@@ -1065,22 +1088,22 @@
                 const res = await fetch(`/api/stock_minute_data?code=${currentDetailSymbol}&datalen=240`);
                 const result = await res.json();
                 
-                console.log("Minute Data Result:", result);
+                console.log("Minute Data Result for", currentDetailSymbol, ":", result);
 
                 let lineData = [];
-                let areaData = []; // 均价线
                 let volumeData = [];
+                let baselineData = []; // 新增：用于 BaselineSeries 的基准数据
 
                 // 优化：更严格的数据校验
                 if (result.status === 'success' && result.data && Array.isArray(result.data) && result.data.length > 0) {
-                    let totalVol = 0;
-                    let totalAmount = 0;
-                    let lastClose = 0; // 用于计算当前分钟的涨跌
-                    
-                    // 获取昨收价，用于判断红绿柱
-                    // 注意：分时接口可能不直接返回昨收，需要从 detail 数据或第一笔数据推断
-                    // 这里假设 currentDetailData 中有 pre_close
-                    const preClose = currentDetailData && currentDetailData.pre_close > 0 ? currentDetailData.pre_close : result.data[0].open;
+                    // 获取昨收价，用于判断红绿柱和基准线
+                    let preClose = 0;
+                    if (currentDetailData && currentDetailData.pre_close > 0) {
+                        preClose = currentDetailData.pre_close;
+                    } else {
+                        // 如果详情数据缺失，尝试使用分时数据的第一个开盘价作为参考
+                        preClose = result.data[0].open || result.data[0].price || 0;
+                    }
 
                     result.data.forEach((item, index) => {
                         if (!item.time) return;
@@ -1096,41 +1119,35 @@
                         if (!closePrice || closePrice <= 0) return;
 
                         // 格式化时间，确保 Lightweight Charts 能识别
-                        // 期望格式: "YYYY-MM-DD HH:mm"
                         let timeStr = item.time.trim();
-                        // 简单清洗，防止多余空格
-                        timeStr = timeStr.replace(/\s+/g, ' '); 
-
+                        // 东财返回格式通常为 "YYYY-MM-DD HH:MM"，Lightweight Charts 支持
+                        // 如果是其他格式，可能需要转换，但东财通常标准
+                        
                         let vol = item.volume || 0;
                         if (vol < 0) vol = 0;
 
-                        // 计算成交额估算值 (价格 * 成交量)
-                        // 注意：新浪分钟数据 volume 通常是手(100股) 还是 股？
-                        // 新浪 getKLineData 返回的 volume 通常是 手
-                        // 为了图表显示，我们直接使用原始值，或者乘以100
-                        // 这里保持原始值，因为主要是看相对大小
-                        
-                        const currAmount = closePrice * vol * 100; // 假设 vol 是手，转为元
-                        totalVol += vol;
-                        totalAmount += currAmount;
-                        
-                        // 计算均价
-                        const avgP = totalVol > 0 ? totalAmount / (totalVol * 100) : (areaData.length > 0 ? areaData[areaData.length - 1].value : closePrice);
-
                         lineData.push({ time: timeStr, value: closePrice });
-                        areaData.push({ time: timeStr, value: avgP });
                         
-                        // 确定颜色：对比上一分钟收盘价或开盘价
-                        // 简化：对比 preClose
-                        const isUp = closePrice >= preClose;
+                        // 新增：构建 BaselineSeries 数据
+                        // BaselineSeries 需要 topValue (基准线值) 和 value (当前值)
+                        // 但 Lightweight Charts v4 的 BaselineSeries 用法略有不同，它通常用于比较两个系列
+                        // 更简单的同花顺效果实现：使用 AreaSeries 并根据价格与昨收关系动态改变颜色较难
+                        // 替代方案：使用 LineSeries 画价格，然后用两个 AreaSeries 覆盖？太复杂。
+                        // 最佳实践：使用 BaselineSeries，设置 baseValue 为 preClose。
+                        // 注意：BaselineSeries 在 v4 中叫 BaselineSeries，需要 import 或检查可用性
+                        // 如果不可用，回退到单色 AreaSeries。
+                        
+                        // 这里我们使用 BaselineSeries 的逻辑准备数据
+                        baselineData.push({ time: timeStr, value: closePrice });
+
+                        // 确定颜色：对比昨收价 (PreClose)
+                        const isUp = preClose > 0 ? (closePrice >= preClose) : true; 
                         
                         volumeData.push({
                             time: timeStr,
                             value: vol,
                             color: isUp ? '#f43f3e' : '#00b42a'
                         });
-                        
-                        lastClose = closePrice;
                     });
                 }
 
@@ -1140,14 +1157,12 @@
                     if (result.status === 'error') {
                         msg = "数据获取失败: " + (result.msg || "未知错误");
                     } else {
-                        // 检查是否是周末或非交易时间
                         const now = new Date();
-                        const day = now.getDay(); // 0 is Sunday
+                        const day = now.getDay(); 
                         const hour = now.getHours();
                         const minute = now.getMinutes();
                         const isWeekend = (day === 0 || day === 6);
                         
-                        // A股交易时间: 9:30-11:30, 13:00-15:00
                         const isTradingTime = !isWeekend && (
                             (hour === 9 && minute >= 30) || 
                             (hour === 10) || 
@@ -1156,9 +1171,9 @@
                         );
 
                         if (!isTradingTime) {
-                             msg += " (当前为非交易时间，暂无实时分时数据)";
+                             msg += " (当前为非交易时间)";
                         } else {
-                             msg += " (可能停牌、刚开盘数据未同步或数据源异常)";
+                             msg += " (可能停牌或数据源异常)";
                         }
                     }
                     priceContainer.innerText = msg;
@@ -1166,8 +1181,15 @@
                     priceContainer.style.textAlign = "center";
                     priceContainer.style.paddingTop = "20px";
                     volumeContainer.innerText = "";
-                    console.warn("No valid minute data to render for", currentDetailSymbol, "Result:", result);
                     return;
+                }
+
+                // 获取昨收价用于 BaselineSeries
+                let preClose = 0;
+                if (currentDetailData && currentDetailData.pre_close > 0) {
+                    preClose = currentDetailData.pre_close;
+                } else if (lineData.length > 0) {
+                    preClose = lineData[0].value; //  fallback
                 }
 
                 // 创建分时价格图
@@ -1177,37 +1199,50 @@
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
                     grid: { vertLines: { color: '#f0f0f0' }, horzLines: { color: '#f0f0f0' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                    rightPriceScale: { borderColor: '#cccccc' },
+                    rightPriceScale: { borderColor: '#cccccc', autoScale: true },
                     timeScale: { 
                         borderColor: '#cccccc',
                         visible: true,
                         timeVisible: true,
                         secondsVisible: false,
-                        tickMarkFormatter: (time) => {
-                            // 自定义时间轴标签，只显示 HH:mm
-                            const date = new Date(time);
-                            // 注意：Lightweight Charts 的时间字符串解析可能依赖浏览器环境
-                            // 如果传入的是 "2023-10-27 10:00"，它通常能自动处理
-                            // 这里不需要额外格式化，库会自动处理
-                            return ''; 
-                        }
+                        fixLeftEdge: true,
+                        fixRightEdge: true,
                     },
                 });
 
-                const areaSeries = dayPriceChart.addAreaSeries({
-                    topColor: 'rgba(244, 63, 62, 0.4)',
-                    bottomColor: 'rgba(244, 63, 62, 0.0)',
-                    lineColor: '#f43f3e',
-                    lineWidth: 2,
-                });
-                areaSeries.setData(lineData);
+                // 尝试使用 BaselineSeries 实现同花顺双色效果
+                // 如果 LightweightCharts.BaselineSeries 存在
+                if (typeof LightweightCharts.BaselineSeries !== 'undefined') {
+                    const baselineSeries = dayPriceChart.addBaselineSeries({
+                        baseValue: { type: 'price', price: preClose },
+                        topLineColor: '#f43f3e',
+                        topFillColor1: 'rgba(244, 63, 62, 0.2)',
+                        topFillColor2: 'rgba(244, 63, 62, 0.0)',
+                        bottomLineColor: '#00b42a',
+                        bottomFillColor1: 'rgba(0, 180, 42, 0.2)',
+                        bottomFillColor2: 'rgba(0, 180, 42, 0.0)',
+                        lineWidth: 2,
+                        lastValueVisible: true,
+                    });
+                    baselineSeries.setData(baselineData);
+                } else {
+                    // 降级方案：单色 AreaSeries
+                    const lastPrice = lineData[lineData.length - 1].value;
+                    const isOverallUp = lastPrice >= preClose;
+                    const mainColor = isOverallUp ? '#f43f3e' : '#00b42a';
+                    const topColor = isOverallUp ? 'rgba(244, 63, 62, 0.2)' : 'rgba(0, 180, 42, 0.2)';
+                    const bottomColor = 'rgba(255, 255, 255, 0)';
 
-                const avgLineSeries = dayPriceChart.addLineSeries({
-                    color: '#eab308',
-                    lineWidth: 1,
-                    lineStyle: LightweightCharts.LineStyle.Dashed,
-                });
-                avgLineSeries.setData(areaData);
+                    const areaSeries = dayPriceChart.addAreaSeries({
+                        topColor: topColor,
+                        bottomColor: bottomColor,
+                        lineColor: mainColor,
+                        lineWidth: 2,
+                        priceLineVisible: false,
+                        lastValueVisible: true,
+                    });
+                    areaSeries.setData(lineData);
+                }
 
                 // 创建分时成交量图
                 dayVolumeChart = LightweightCharts.createChart(volumeContainer, {
@@ -1365,6 +1400,7 @@
                 const height = priceContainer.clientHeight || 300;
                 const volWidth = volumeContainer.clientWidth || 600;
                 const volHeight = volumeContainer.clientHeight || 100;
+
 
                 // 创建K线主图
                 kLinePriceChart = LightweightCharts.createChart(priceContainer, {

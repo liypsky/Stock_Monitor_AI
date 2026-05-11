@@ -1,7 +1,10 @@
 针对您的需求，我将对 /stock-monitor-tyi/static/index.html 进行以下修改：
 
 
-实现基于 lightweight-charts 的分时图和 K 线图渲染逻辑。
-配置红涨绿跌配色。
+实现基于 lightweight-charts 的分时图和 K 线图渲染逻辑。配置红涨绿跌配色。
 实现主图（价格/K线）与副图（成交量）的时间轴同步。
+
+
+根据需求，需要调高“第二张图”（通常指K线图或分时图中的成交量副图）的柱子高度。在当前的 index.html 中，图表容器的高度由 CSS 控制。
+
 
