@@ -1261,7 +1261,7 @@
                     }
                 }).observe(priceContainer);
 
-                // 默认显示最近 N 条，并确保内容适配
+                // 默认显示最近 30 个单位（日/周/月），并确保内容适配
                 // 使用 setTimeout 确保 DOM 渲染完成后再调整视图
                 setTimeout(() => {
                     if (kLinePriceChart && kLineVolumeChart) {
@@ -1272,7 +1272,35 @@
                              kLinePriceChart.applyOptions({ width: finalWidth, height: finalHeight });
                              kLineVolumeChart.applyOptions({ width: finalWidth, height: volumeContainer.clientHeight });
                         }
-                        kLinePriceChart.timeScale().fitContent();
+                        
+                        // 新增：强制设置初始显示范围为最近 30 条数据
+                        const dataLength = candleData.length;
+                        const viewCount = 30; // 默认显示30个单位
+                        
+                        if (dataLength > 0) {
+                            // 计算起始索引，确保不为负数
+                            const fromIndex = Math.max(0, dataLength - viewCount);
+                            const toIndex = dataLength - 1;
+                            
+                            // 获取对应的时间点
+                            const fromTime = candleData[fromIndex].time;
+                            const toTime = candleData[toIndex].time;
+                            
+                            // 设置可见时间范围
+                            kLinePriceChart.timeScale().setVisibleRange({
+                                from: fromTime,
+                                to: toTime
+                            });
+                            
+                            // 同步成交量图的时间范围
+                            kLineVolumeChart.timeScale().setVisibleRange({
+                                from: fromTime,
+                                to: toTime
+                            });
+                        } else {
+                            // 如果数据不足30条，则适应内容
+                            kLinePriceChart.timeScale().fitContent();
+                        }
                     }
                 }, 50);
 
