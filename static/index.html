@@ -1123,11 +1123,9 @@
                 setTimeout(() => {
                     observer.disconnect();
                     if (priceContainer.clientWidth === 0 || priceContainer.clientHeight === 0) {
-                         priceContainer.innerText = "图表容器尺寸异常，请尝试刷新页面或重新打开详情";
-                         priceContainer.style.color = "#999";
-                         priceContainer.style.textAlign = "center";
-                         priceContainer.style.paddingTop = "20px";
+                         // 修改：不再显示错误文本，而是尝试再次渲染或保持空白，避免破坏布局
                          console.error("Chart container remains 0 size after timeout");
+                         // 可以选择再次调用 renderDayChart 或者保持空白
                     }
                 }, 2000);
 
@@ -1196,44 +1194,17 @@
                     console.warn("No valid minute data received. Status:", result.status, "Data:", result.data);
                 }
 
-                if (lineData.length === 0) {
-                    let msg = "暂无分时数据";
-                    if (result.status === 'error') {
-                        msg = "数据获取失败: " + (result.msg || "未知错误");
-                    } else {
-                        const now = new Date();
-                        const day = now.getDay(); 
-                        const hour = now.getHours();
-                        const minute = now.getMinutes();
-                        const isWeekend = (day === 0 || day === 6);
-                        
-                        const isTradingTime = !isWeekend && (
-                            (hour === 9 && minute >= 30) || 
-                            (hour === 10) || 
-                            (hour === 11 && minute <= 30) || 
-                            (hour >= 13 && hour < 15)
-                        );
-
-                        if (!isTradingTime) {
-                             msg += " (当前为非交易时间)";
-                        } else {
-                             msg += " (可能停牌或数据源异常)";
-                        }
-                    }
-                    priceContainer.innerText = msg;
-                    priceContainer.style.color = "#999";
-                    priceContainer.style.textAlign = "center";
-                    priceContainer.style.paddingTop = "20px";
-                    volumeContainer.innerText = "";
-                    return;
-                }
-
+                // 修改：移除“暂无分时数据”的文本提示逻辑，即使没有数据也初始化图表，展示空白的走势图框架
+                
                 // 获取昨收价用于 BaselineSeries
                 let preClose = 0;
                 if (currentDetailData && currentDetailData.pre_close > 0) {
                     preClose = currentDetailData.pre_close;
                 } else if (lineData.length > 0) {
                     preClose = lineData[0].value; 
+                } else {
+                    // 如果没有数据，默认基准价为0，或者可以从当前详情数据中获取大概价格作为基准
+                    preClose = currentDetailData ? currentDetailData.price : 0;
                 }
 
                 // 创建分时价格图
@@ -1267,10 +1238,11 @@
                         lineWidth: 2,
                         lastValueVisible: true,
                     });
+                    // 即使 lineData 为空，setData([]) 也是安全的，图表将显示为空白网格
                     baselineSeries.setData(baselineData);
                 } else {
                     // 降级方案：单色 AreaSeries
-                    const lastPrice = lineData[lineData.length - 1].value;
+                    const lastPrice = lineData.length > 0 ? lineData[lineData.length - 1].value : preClose;
                     const isOverallUp = lastPrice >= preClose;
                     const mainColor = isOverallUp ? '#f43f3e' : '#00b42a';
                     const topColor = isOverallUp ? 'rgba(244, 63, 62, 0.2)' : 'rgba(0, 180, 42, 0.2)';
@@ -1332,7 +1304,8 @@
                 
             } catch (error) {
                 console.error("Error rendering day chart:", error);
-                priceContainer.innerText = "图表渲染错误: " + error.message;
+                // 修改：出错时也不显示文本错误，而是记录日志，保持界面整洁或显示空白图表
+                // priceContainer.innerText = "图表渲染错误: " + error.message;
             }
         }
 

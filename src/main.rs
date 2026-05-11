@@ -940,6 +940,12 @@ async fn get_stock_minute_data(
                     // 解析 JSON
                     if let Ok(root) = serde_json::from_str::<Value>(&text) {
                         if let Some(data) = root.get("data") {
+                            // 新增：检查 data 是否为 null
+                            if data.is_null() {
+                                eprintln!("⚠️ EastMoney Minute Data is null for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
+                                return Json(json!({"status": "error", "msg": "数据源无返回"}));
+                            }
+
                             if let Some(trends) = data.get("trends") {
                                 if let Some(arr) = trends.as_array() {
                                     let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
@@ -947,6 +953,7 @@ async fn get_stock_minute_data(
                                     // 获取交易日期并清洗格式
                                     let raw_trade_date = data.get("tradeDate").and_then(|v| v.as_str()).unwrap_or("");
                                     // 清洗 tradeDate: 只保留 YYYY-MM-DD 部分，防止包含时间或其他字符
+                                    // 兼容格式: "2023-10-27 15:00:00" 或 "2023-10-27"
                                     let trade_date = if raw_trade_date.len() >= 10 {
                                         raw_trade_date[..10].to_string()
                                     } else {
@@ -967,7 +974,7 @@ async fn get_stock_minute_data(
                                                 
                                                 // 修复：构建严格的标准时间字符串 "YYYY-MM-DD HH:mm"
                                                 let full_time = if !trade_date.is_empty() && !time_str_raw.is_empty() {
-                                                    // 只取前5位字符作为 HH:MM，防止包含秒数
+                                                    // 只取前5位字符作为 HH:MM，防止包含秒数 (如 "09:30:00" -> "09:30")
                                                     let clean_time = if time_str_raw.len() >= 5 {
                                                         time_str_raw[..5].to_string()
                                                     } else {
@@ -998,14 +1005,28 @@ async fn get_stock_minute_data(
                                             }
                                         }
                                     }
+                                    
+                                    // 新增：如果解析后数据为空，但数组不为空（理论上不可能，除非所有行格式都错），打印日志
+                                    if minute_data.is_empty() && !arr.is_empty() {
+                                        eprintln!("⚠️ Parsed minute data is empty despite non-empty array for {}. Sample raw data: {}", normalized_code, arr.first().map_or("N/A", |v| v.as_str().unwrap_or("N/A")));
+                                    }
+
                                     println!("Debug: Parsed {} minute data points for {}", minute_data.len(), normalized_code);
                                     return Json(json!({
                                         "status": "success",
                                         "data": minute_data
                                     }));
                                 }
+                            } else {
+                                // 新增：trends 字段缺失
+                                eprintln!("⚠️ No 'trends' field in response for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
                             }
+                        } else {
+                             // 新增：data 字段缺失
+                             eprintln!("⚠️ No 'data' field in response for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
                         }
+                    } else {
+                         eprintln!("❌ Failed to parse JSON for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
                     }
                 }
             }
