@@ -1784,8 +1784,9 @@
                     priceScaleId: '',
                     lastValueVisible: false, // 新增：隐藏成交量最新值标签
                 });
+                // 修改：调整 scaleMargins.top 从 0.8 降至 0.5，使成交量柱体占据更多垂直空间（原为底部20%，现为底部50%）
                 volumeSeries.priceScale().applyOptions({
-                    scaleMargins: { top: 0.8, bottom: 0 },
+                    scaleMargins: { top: 0.5, bottom: 0 },
                 });
                 volumeSeries.setData(volumeData);
 
