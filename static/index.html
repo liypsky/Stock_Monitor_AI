@@ -1256,7 +1256,7 @@
                     preClose = currentDetailData ? currentDetailData.price : 0;
                 }
 
-                // 创建分时价格图
+                // 创建分时价格图 (上方图，隐藏时间轴)
                 dayPriceChart = LightweightCharts.createChart(priceContainer, {
                     width: pWidth,
                     height: pHeight,
@@ -1264,17 +1264,15 @@
                     grid: { vertLines: { color: '#f0f0f0' }, horzLines: { color: '#f0f0f0' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                     rightPriceScale: { borderColor: '#cccccc', autoScale: true },
+                    // 修改：隐藏上方价格图的时间轴，使其只显示在下方成交量图中
                     timeScale: { 
+                        visible: false,
                         borderColor: '#cccccc',
-                        visible: true,
                         timeVisible: true,
                         secondsVisible: false,
                         fixLeftEdge: false,
                         fixRightEdge: false,
-                        // 使用 Unix 时间戳时，Lightweight Charts 会自动格式化
-                        // 如果需要自定义，可以使用 tickMarkFormatter
                         tickMarkFormatter: (time, tickMarkType, locale) => {
-                            // time 是 Unix 时间戳
                             const date = new Date(time * 1000);
                             const hours = date.getHours().toString().padStart(2, '0');
                             const minutes = date.getMinutes().toString().padStart(2, '0');
@@ -1318,13 +1316,14 @@
                     areaSeries.setData(lineData);
                 }
 
-                // 创建分时成交量图
+                // 创建分时成交量图 (下方图，显示时间轴)
                 dayVolumeChart = LightweightCharts.createChart(volumeContainer, {
                     width: vWidth,
                     height: vHeight,
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
                     grid: { vertLines: { visible: false }, horzLines: { visible: false } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                    // 确保右侧Y轴标签不显示，保持界面整洁并与上方对齐
                     rightPriceScale: { visible: false },
                     timeScale: { 
                         borderColor: '#cccccc',
