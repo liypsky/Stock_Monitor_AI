@@ -138,6 +138,27 @@
             margin-top: 2px;
         }
         .mf-center-line { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #ccc; z-index: 1; }
+        
+        /* 新增：K线图 Tooltip 样式 */
+        #k-tooltip {
+            display: none;
+            position: absolute;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 12px;
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            pointer-events: none; /* 防止遮挡鼠标交互 */
+            white-space: nowrap;
+            line-height: 1.6;
+        }
+        .tooltip-row { display: flex; justify-content: space-between; gap: 15px; }
+        .tooltip-label { color: #666; margin-right: 5px; }
+        .tooltip-val { font-weight: bold; color: #333; }
+        .tooltip-date { border-bottom: 1px solid #eee; margin-bottom: 4px; padding-bottom: 2px; font-weight: bold; color: #333; }
     </style>
 </head>
 <body>
@@ -258,6 +279,8 @@
                 <div class="chart-wrapper">
                     <!-- 新增：K线图例容器，用于显示MA值 -->
                     <div id="k-legend" style="position: absolute; left: 12px; top: 12px; z-index: 2; font-size: 12px; font-family: sans-serif; pointer-events: none;"></div>
+                    <!-- 新增：K线 Tooltip 容器 -->
+                    <div id="k-tooltip"></div>
                     <div id="chart-k-price-div"></div>
                 </div>
                 <div class="chart-wrapper">
@@ -1251,6 +1274,7 @@
             const priceContainer = document.getElementById('chart-k-price-div');
             const volumeContainer = document.getElementById('chart-k-volume-div');
             const legendContainer = document.getElementById('k-legend'); // 新增：获取图例容器
+            const tooltipElement = document.getElementById('k-tooltip'); // 新增：获取 Tooltip 元素
 
             if (!priceContainer || !volumeContainer) {
                 console.error("[KChart] Containers not found");
@@ -1270,6 +1294,7 @@
             priceContainer.innerHTML = '';
             volumeContainer.innerHTML = '';
             if (legendContainer) legendContainer.innerHTML = ''; // 新增：清空旧图例
+            if (tooltipElement) tooltipElement.style.display = 'none'; // 新增：隐藏 Tooltip
 
             const symbol = currentDetailSymbol;
             const cacheKey = `${symbol}_${type}`;
@@ -1438,11 +1463,9 @@
                     legendContainer.innerHTML = legendHtml;
                 }
 
-                // 新增：订阅十字光标移动事件，更新图例数值
+                // 新增：订阅十字光标移动事件，更新图例数值 和 Tooltip
                 kLinePriceChart.subscribeCrosshairMove(param => {
-                    // 获取当前时间点的数据
-                    // 如果 param.time 为空或鼠标移出图表，param.seriesData 可能为空或包含最后悬停点
-                    
+                    // 1. 更新左上角图例
                     maSeriesList.forEach(item => {
                         const valEl = document.getElementById(`ma-val-${item.period}`);
                         if (!valEl) return;
@@ -1468,6 +1491,78 @@
                             }
                         }
                     });
+
+                    // 2. 更新 Tooltip
+                    if (!tooltipElement) return;
+
+                    // 如果 param.point 为 undefined，说明鼠标移出了图表区域
+                    if (!param.point || !param.time || !param.seriesData) {
+                        tooltipElement.style.display = 'none';
+                        return;
+                    }
+
+                    // 获取当前时间点的 K 线数据
+                    // param.seriesData 是一个 Map，key 是 Series 对象，value 是该 Series 在当前时间点的数据
+                    const currentCandle = param.seriesData.get(candleSeries);
+                    
+                    if (!currentCandle) {
+                        tooltipElement.style.display = 'none';
+                        return;
+                    }
+
+                    // 构建 Tooltip 内容
+                    const dateStr = param.time; // YYYY-MM-DD
+                    
+                    // 格式化数值
+                    const fmt = (num) => num.toFixed(2);
+                    const open = fmt(currentCandle.open);
+                    const high = fmt(currentCandle.high);
+                    const low = fmt(currentCandle.low);
+                    const close = fmt(currentCandle.close);
+                    
+                    // 获取 MA 值
+                    let maHtml = '';
+                    maSeriesList.forEach(item => {
+                        const maData = param.seriesData.get(item.series);
+                        const maVal = maData ? fmt(maData.value) : '--';
+                        maHtml += `<div class="tooltip-row"><span class="tooltip-label" style="color:${item.color}">MA${item.period}</span><span class="tooltip-val">${maVal}</span></div>`;
+                    });
+
+                    tooltipElement.innerHTML = `
+                        <div class="tooltip-date">${dateStr}</div>
+                        <div class="tooltip-row"><span class="tooltip-label">开盘:</span><span class="tooltip-val">${open}</span></div>
+                        <div class="tooltip-row"><span class="tooltip-label">最高:</span><span class="tooltip-val">${high}</span></div>
+                        <div class="tooltip-row"><span class="tooltip-label">最低:</span><span class="tooltip-val">${low}</span></div>
+                        <div class="tooltip-row"><span class="tooltip-label">收盘:</span><span class="tooltip-val" style="color:${currentCandle.close >= currentCandle.open ? '#f43f3e' : '#00b42a'}">${close}</span></div>
+                        ${maHtml}
+                    `;
+
+                    // 显示并定位 Tooltip
+                    tooltipElement.style.display = 'block';
+                    
+                    // 计算位置：跟随鼠标，但避免超出容器边界
+                    // param.point.x 和 param.point.y 是相对于图表容器的坐标
+                    const chartRect = priceContainer.getBoundingClientRect();
+                    const tooltipRect = tooltipElement.getBoundingClientRect();
+                    
+                    let left = param.point.x + 15; // 鼠标右侧偏移
+                    let top = param.point.y + 15;  // 鼠标下方偏移
+
+                    // 边界检查：如果右侧空间不足，显示在左侧
+                    if (left + tooltipRect.width > chartRect.width) {
+                        left = param.point.x - tooltipRect.width - 15;
+                    }
+                    // 边界检查：如果底部空间不足，显示在上方
+                    if (top + tooltipRect.height > chartRect.height) {
+                        top = param.point.y - tooltipRect.height - 15;
+                    }
+                    
+                    // 确保不超出左/上边界
+                    if (left < 0) left = 5;
+                    if (top < 0) top = 5;
+
+                    tooltipElement.style.left = `${left}px`;
+                    tooltipElement.style.top = `${top}px`;
                 });
 
                 // 创建K线成交量图
