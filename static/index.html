@@ -1131,8 +1131,8 @@
             }
 
             try {
-                // 获取分时数据 (获取1分钟原始数据)
-                const res = await fetch(`/api/stock_minute_data?code=${currentDetailSymbol}&datalen=240`);
+                // 修改：获取2天的分时数据 (480分钟)，以便默认显示两天对比
+                const res = await fetch(`/api/stock_minute_data?code=${currentDetailSymbol}&datalen=480`);
                 const result = await res.json();
                 
                 console.log("Minute Data Result for", currentDetailSymbol, ":", result);
@@ -1379,9 +1379,25 @@
                     }
                 });
 
-                // 确保时间轴内容完全显示
-                dayPriceChart.timeScale().fitContent();
-                dayVolumeChart.timeScale().fitContent();
+                // 修改：默认显示最近2天的数据
+                // 使用 setVisibleRange 强制聚焦在最近的数据上，而不是 fitContent 可能导致的全量缩放
+                if (lineData.length > 0) {
+                    // 计算2天前的大致时间戳作为起始点
+                    // 注意：这里简单地将最后一个时间点减去2天的秒数
+                    // 更精确的做法是找到倒数第480个点的时间，但考虑到数据可能不足2天，使用时间计算更稳健
+                    const lastTime = lineData[lineData.length - 1].time;
+                    const twoDaysInSeconds = 2 * 24 * 60 * 60; 
+                    const fromTime = lastTime - twoDaysInSeconds;
+                    
+                    // 设置可见范围
+                    dayPriceChart.timeScale().setVisibleRange({
+                        from: fromTime,
+                        to: lastTime + 60 * 60 // 向右多留一点空间，避免贴边
+                    });
+                } else {
+                    // 如果没有数据，则适应内容
+                    dayPriceChart.timeScale().fitContent();
+                }
                 
             } catch (error) {
                 console.error("Error rendering day chart:", error);
@@ -1413,7 +1429,13 @@
             priceContainer.innerHTML = '';
             volumeContainer.innerHTML = '';
             if (legendContainer) legendContainer.innerHTML = ''; // 新增：清空旧图例
-            if (tooltipElement) tooltipElement.style.display = 'none'; // 新增：隐藏 Tooltip
+            
+            // 修复：确保 Tooltip 在重新渲染时被隐藏，并检查元素是否存在
+            if (tooltipElement) {
+                tooltipElement.style.display = 'none';
+            } else {
+                console.warn("[KChart] Tooltip element #k-tooltip not found in DOM");
+            }
 
             const symbol = currentDetailSymbol;
             const cacheKey = `${symbol}_${type}`;
@@ -1634,6 +1656,7 @@
                     });
 
                     // 2. 更新 Tooltip
+                    // 修复：增加对 tooltipElement 存在性的再次检查，防止报错
                     if (!tooltipElement) return;
 
                     // 如果 param.point 为 undefined，说明鼠标移出了图表区域
@@ -1684,18 +1707,36 @@
                     
                     // 计算位置：跟随鼠标，但避免超出容器边界
                     // param.point.x 和 param.point.y 是相对于图表容器的坐标
+                    // 修复：确保基于 priceContainer 的边界进行计算，防止定位错误
                     const chartRect = priceContainer.getBoundingClientRect();
-                    const tooltipRect = tooltipElement.getBoundingClientRect();
+                    
+                    // 使用 param.point.x/y 加上容器偏移量得到页面绝对位置，或者直接相对于容器定位
+                    // 这里我们保持相对于容器的定位，但需要确保 tooltip 是 absolute 且父容器是 relative
+                    // 检查 CSS: #chart-k-price-div 是否有 position: relative? 
+                    // 在 HTML 结构中，#chart-k-price-div 在 .chart-wrapper 中，.chart-wrapper 有 position: relative
+                    
+                    // 修改：直接使用 param.point.x/y 作为相对于 priceContainer 的偏移
+                    // 因为 tooltip 是 absolute 定位，且其父元素 .chart-wrapper 是 relative
+                    // 我们需要将 tooltip 移动到 .chart-wrapper 内部，或者计算相对于页面的位置
+                    // 为了简化，我们假设 tooltip 是 body 的子元素或者固定定位，但原代码中它在 .chart-wrapper 内
+                    // 原 CSS: #k-tooltip { position: absolute; ... }
+                    // 原 HTML: <div class="chart-wrapper"> <div id="k-tooltip"></div> ... </div>
+                    // 所以 param.point.x/y 是相对于 priceContainer (即 .chart-wrapper 的子元素) 的
+                    // 但 tooltip 是 .chart-wrapper 的子元素，所以 param.point.x/y 可以直接用于 left/top
                     
                     let left = param.point.x + 15; // 鼠标右侧偏移
                     let top = param.point.y + 15;  // 鼠标下方偏移
 
+                    // 获取 tooltip 的实际尺寸
+                    const tooltipRect = tooltipElement.getBoundingClientRect();
+                    
                     // 边界检查：如果右侧空间不足，显示在左侧
-                    if (left + tooltipRect.width > chartRect.width) {
+                    // 注意：这里的 width 是 priceContainer 的宽度
+                    if (left + tooltipRect.width > width) {
                         left = param.point.x - tooltipRect.width - 15;
                     }
                     // 边界检查：如果底部空间不足，显示在上方
-                    if (top + tooltipRect.height > chartRect.height) {
+                    if (top + tooltipRect.height > height) {
                         top = param.point.y - tooltipRect.height - 15;
                     }
                     
