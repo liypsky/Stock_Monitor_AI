@@ -256,6 +256,8 @@
             <!-- K线图改为 Lightweight Charts 容器 -->
             <div class="chart-container" id="chart-container-k" style="display: none;">
                 <div class="chart-wrapper">
+                    <!-- 新增：K线图例容器，用于显示MA值 -->
+                    <div id="k-legend" style="position: absolute; left: 12px; top: 12px; z-index: 2; font-size: 12px; font-family: sans-serif; pointer-events: none;"></div>
                     <div id="chart-k-price-div"></div>
                 </div>
                 <div class="chart-wrapper">
@@ -1248,6 +1250,7 @@
         async function renderKChart(type) {
             const priceContainer = document.getElementById('chart-k-price-div');
             const volumeContainer = document.getElementById('chart-k-volume-div');
+            const legendContainer = document.getElementById('k-legend'); // 新增：获取图例容器
 
             if (!priceContainer || !volumeContainer) {
                 console.error("[KChart] Containers not found");
@@ -1266,6 +1269,7 @@
 
             priceContainer.innerHTML = '';
             volumeContainer.innerHTML = '';
+            if (legendContainer) legendContainer.innerHTML = ''; // 新增：清空旧图例
 
             const symbol = currentDetailSymbol;
             const cacheKey = `${symbol}_${type}`;
@@ -1345,9 +1349,9 @@
                     grid: { vertLines: { color: '#f0f0f0' }, horzLines: { color: '#f0f0f0' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                     rightPriceScale: { borderColor: '#cccccc' },
-                    // 修改：主图显示时间轴，以便用户知道具体日期
+                    // 修改：主图隐藏时间轴，避免与副图重复，实现时间轴只在最下方显示
                     timeScale: { 
-                        visible: true,
+                        visible: false, 
                         borderColor: '#cccccc',
                         timeVisible: true,
                         secondsVisible: false,
@@ -1382,7 +1386,7 @@
                                 wickUpColor: '#f43f3e',
                                 wickDownColor: '#00b42a',
                                 lastValueVisible: false, // 新增：隐藏最新价格标签（横线）
-                                priceLineVisible: false, // 新增：隐藏价格线
+                                priceLineVisible: false, // 隐藏价格线
                             });
                         } else {
                             throw new Error("CandlestickSeries constructor not found in LightweightCharts");
@@ -1399,6 +1403,7 @@
                 // 新增：计算并添加 MA5, MA10, MA20 均线
                 const maPeriods = [5, 10, 20];
                 const maColors = ['#eab308', '#3b82f6', '#a855f7']; // 黄, 蓝, 紫
+                const maSeriesList = []; // 新增：存储均线系列以便更新图例
                 
                 maPeriods.forEach((period, index) => {
                     const maData = [];
@@ -1417,11 +1422,52 @@
                     const maSeries = kLinePriceChart.addLineSeries({
                         color: maColors[index],
                         lineWidth: 1,
-                        lastValueVisible: false, // 关键修改：隐藏均线右侧的数值标签（横线）
-                        priceLineVisible: false, // 隐藏价格线
-                        title: `MA${period}`, // 可选：在图例中显示名称
+                        lastValueVisible: false, // 确保隐藏右侧最新值标签
+                        priceLineVisible: false, // 确保隐藏价格线
                     });
                     maSeries.setData(maData);
+                    maSeriesList.push({ series: maSeries, period: period, color: maColors[index] });
+                });
+
+                // 修改：初始化图例 HTML，仅显示标签，数值由 JS 动态更新
+                if (legendContainer) {
+                    let legendHtml = '';
+                    maSeriesList.forEach(item => {
+                        legendHtml += `<span style="margin-right: 8px;"><span style="color: ${item.color}; font-weight: bold;">MA${item.period}</span>: <span id="ma-val-${item.period}">--</span></span>`;
+                    });
+                    legendContainer.innerHTML = legendHtml;
+                }
+
+                // 新增：订阅十字光标移动事件，更新图例数值
+                kLinePriceChart.subscribeCrosshairMove(param => {
+                    // 获取当前时间点的数据
+                    // 如果 param.time 为空或鼠标移出图表，param.seriesData 可能为空或包含最后悬停点
+                    
+                    maSeriesList.forEach(item => {
+                        const valEl = document.getElementById(`ma-val-${item.period}`);
+                        if (!valEl) return;
+
+                        // 尝试从 param.seriesData 中获取当前悬停点的均线值
+                        const maData = param.seriesData ? param.seriesData.get(item.series) : null;
+                        
+                        if (maData && maData.value !== undefined) {
+                            // 鼠标在图表内，显示悬停点的值
+                            valEl.innerText = maData.value.toFixed(2);
+                        } else {
+                            // 鼠标移出或无数据，显示最新一个数据点的值
+                            // 重新计算最后一个点的 MA 值
+                            const lastIndex = candleData.length - 1;
+                            if (lastIndex >= item.period - 1) {
+                                let sum = 0;
+                                for(let k=0; k<item.period; k++) {
+                                    sum += candleData[lastIndex-k].close;
+                                }
+                                valEl.innerText = (sum/item.period).toFixed(2);
+                            } else {
+                                valEl.innerText = '--';
+                            }
+                        }
+                    });
                 });
 
                 // 创建K线成交量图
@@ -1432,10 +1478,12 @@
                     grid: { vertLines: { visible: false }, horzLines: { visible: false } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                     rightPriceScale: { visible: false },
-                    // 修改：成交量图隐藏时间轴标签，避免与主图重复，但保持同步滚动
+                    // 修改：成交量图显示时间轴，作为整个图表区域的最底部时间轴
                     timeScale: { 
-                        visible: false, 
-                        borderColor: '#cccccc' 
+                        visible: true, 
+                        borderColor: '#cccccc',
+                        timeVisible: true,
+                        secondsVisible: false,
                     },
                 });
 
