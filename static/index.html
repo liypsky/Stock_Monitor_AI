@@ -1150,13 +1150,11 @@
                         preClose = result.data[0].open || result.data[0].price || 0;
                     }
 
-                    // 直接使用后端返回的原始分钟数据，不再进行前端重采样
-                    // 新增：用于调试，打印第一条数据的时间格式
+                    // 用于调试
                     let debugLogged = false;
-                    let firstValidPoint = null; // 新增：记录第一个有效点用于调试
                     
-                    // 新增：用于跟踪最后生成的时间，防止重复
-                    let lastGeneratedTimeStr = "";
+                    // 新增：用于跟踪最后生成的时间戳，防止重复
+                    let lastTimestamp = 0;
 
                     result.data.forEach((item, index) => {
                         if (!item.time) return;
@@ -1167,133 +1165,87 @@
 
                         if (!closePrice || closePrice <= 0) return;
 
-                        // 修复：增强时间格式校验和清洗
-                        // 期望格式: YYYY-MM-DD HH:mm
+                        // 修复：将时间字符串转换为 Unix 时间戳 (秒)
+                        // 期望后端返回格式: "YYYY-MM-DD HH:mm" 或 "YYYY-MM-DD HH:mm:ss"
                         let timeStr = item.time.trim();
-                        let isValidTime = false;
+                        let timestamp = 0;
+
+                        // 尝试解析时间
+                        // 替换可能的分隔符，统一为 - 和 :
+                        // 注意：new Date() 在部分浏览器对 "YYYY-MM-DD HH:mm" 支持良好，但为了稳妥，我们手动解析或替换 T
                         
-                        // 1. 尝试匹配标准的 YYYY-MM-DD HH:mm
-                        const match = timeStr.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})/);
-                        if (match) {
-                            timeStr = `${match[1]} ${match[2]}`;
-                            isValidTime = true;
-                        } 
-                        // 2. 尝试匹配 YYYY-MM-DDTHH:mm (ISO 8601 变体)
-                        else if (/(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.test(timeStr)) {
-                            const isoMatch = timeStr.match(/(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
-                            if (isoMatch) {
-                                timeStr = `${isoMatch[1]} ${isoMatch[2]}`;
-                                isValidTime = true;
-                            }
-                        } 
-                        // 3. 尝试匹配 YYYY/MM/DD HH:mm
-                        else if (timeStr.includes('/')) {
-                            const slashMatch = timeStr.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}:\d{2})/);
-                            if (slashMatch) {
-                                timeStr = `${slashMatch[1]}-${slashMatch[2]}-${slashMatch[3]} ${slashMatch[4]}`;
-                                isValidTime = true;
-                            }
-                        }
-                    
-                        // 4. 兜底处理：如果上述都失败，但包含日期部分，尝试修复常见截断错误
-                        // 例如 "2026-05-11 2026-" 这种明显错误的格式
-                        if (!isValidTime) {
-                            // 尝试提取前10位作为日期 YYYY-MM-DD
-                            const datePart = timeStr.substring(0, 10);
-                            const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+                        // 简单替换空格为 T 以符合 ISO 8601 建议格式，或者直接由 Date 解析
+                        // Date.parse 对 "YYYY-MM-DD HH:mm:ss" 支持较好
+                        const dateObj = new Date(timeStr.replace(/-/g, '/')); // 兼容 iOS/Safari: YYYY/MM/DD HH:mm
                         
-                            if (dateRegex.test(datePart)) {
-                                // 改进：根据 A 股交易时间规则生成时间，而不是简单累加
-                                // A股交易时间：09:30-11:30 (120分钟), 13:00-15:00 (120分钟)
-                                // 假设数据是按顺序排列的分钟线
-                            
-                                let hour, minute;
-                                const MORNING_START_MINUTES = 9 * 60 + 30; // 09:30
-                                const MORNING_DURATION = 120; // 09:30 to 11:30 is 2 hours = 120 mins
-                                const AFTERNOON_START_MINUTES = 13 * 60; // 13:00
-                            
-                                if (index < MORNING_DURATION) {
-                                    // 上午时段: 09:30 + index minutes
-                                    const totalMinutes = MORNING_START_MINUTES + index;
-                                    hour = Math.floor(totalMinutes / 60);
-                                    minute = totalMinutes % 60;
-                                } else {
-                                    // 下午时段: 13:00 + (index - 120) minutes
-                                    const afternoonIndex = index - MORNING_DURATION;
-                                    // 检查是否超出下午交易时间 (120分钟)
-                                    if (afternoonIndex >= 120) {
-                                        // 数据点过多，可能是数据错误或包含盘后，跳过
-                                        if (!debugLogged) {
-                                            console.warn("Index exceeds trading hours for simple generation:", index);
-                                        }
-                                        return; 
-                                    }
-                                    const totalMinutes = AFTERNOON_START_MINUTES + afternoonIndex;
-                                    hour = Math.floor(totalMinutes / 60);
-                                    minute = totalMinutes % 60;
-                                }
-                            
-                                // 格式化时间
-                                const timePart = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-                                timeStr = `${datePart} ${timePart}`;
-                                isValidTime = true;
-                            
-                                if (!debugLogged) {
-                                    console.warn("Time format repair attempted for:", item.time, "->", timeStr, "(Index:", index, ")");
-                                    debugLogged = true;
-                                }
+                        if (!isNaN(dateObj.getTime())) {
+                            timestamp = Math.floor(dateObj.getTime() / 1000);
+                        } else {
+                            // 如果解析失败，尝试根据索引生成时间（兜底策略）
+                            // 假设当天交易日，从 9:30 开始
+                            if (!debugLogged) {
+                                console.warn("Failed to parse time:", timeStr, "using fallback generation");
+                                debugLogged = true;
                             }
+                            
+                            // 获取今天日期
+                            const today = new Date();
+                            const year = today.getFullYear();
+                            const month = today.getMonth();
+                            const day = today.getDate();
+                            
+                            // 计算分钟偏移
+                            // 上午: 0-119 (9:30-11:30)
+                            // 下午: 120-239 (13:00-15:00)
+                            let hour, minute;
+                            if (index < 120) {
+                                const totalMinutes = 9 * 60 + 30 + index;
+                                hour = Math.floor(totalMinutes / 60);
+                                minute = totalMinutes % 60;
+                            } else {
+                                const afternoonIndex = index - 120;
+                                if (afternoonIndex >= 120) return; // 超出交易时间
+                                const totalMinutes = 13 * 60 + afternoonIndex;
+                                hour = Math.floor(totalMinutes / 60);
+                                minute = totalMinutes % 60;
+                            }
+                            
+                            const fallbackDate = new Date(year, month, day, hour, minute, 0);
+                            timestamp = Math.floor(fallbackDate.getTime() / 1000);
                         }
 
-                    if (!isValidTime) {
-                         // 如果依然无法识别，记录错误并跳过
-                        if (!debugLogged) {
-                            console.error("Invalid time format from backend, skipping point. Raw time:", item.time, "Item:", item);
-                            debugLogged = true;
+                        // 防止重复时间点
+                        if (timestamp <= lastTimestamp) {
+                            // 如果时间相同或倒退，跳过（可能是数据源问题或重复推送）
+                            // 除非是同一分钟的最后一笔？分时图通常每分钟一个点
+                            // 这里严格一点，跳过重复
+                            return;
                         }
-                        return;
-                    }
+                        lastTimestamp = timestamp;
 
-                    // 新增：防止重复时间点导致 Lightweight Charts 报错或渲染异常
-                    if (timeStr === lastGeneratedTimeStr) {
-                        // 如果时间重复，跳过该点或合并（这里选择跳过，因为分时图通常每分钟一个点）
-                        // console.warn("Duplicate time point skipped:", timeStr);
-                        return;
-                    }
-                    lastGeneratedTimeStr = timeStr;
+                        let vol = item.volume || 0;
+                        if (vol < 0) vol = 0;
 
-                    let vol = item.volume || 0;
-                    if (vol < 0) vol = 0;
+                        // Lightweight Charts v3 推荐使用 Unix Timestamp (number)
+                        lineData.push({ time: timestamp, value: closePrice });
+                        baselineData.push({ time: timestamp, value: closePrice });
 
-                    lineData.push({ time: timeStr, value: closePrice });
-                    baselineData.push({ time: timeStr, value: closePrice });
-
-                    const isUp = preClose > 0 ? (closePrice >= preClose) : true; 
+                        const isUp = preClose > 0 ? (closePrice >= preClose) : true; 
                         
-                    volumeData.push({
-                        time: timeStr,
-                        value: vol,
-                        color: isUp ? '#f43f3e' : '#00b42a'
+                        volumeData.push({
+                            time: timestamp,
+                            value: vol,
+                            color: isUp ? '#f43f3e' : '#00b42a'
+                        });
                     });
-
-                    // 记录第一个有效点用于调试
-                    if (!firstValidPoint) {
-                        firstValidPoint = { time: timeStr, value: closePrice };
-                    }
-                });
                     
-                    // 新增：如果解析后数据为空，但原始数据不为空，说明全是时间格式问题
                     if (lineData.length === 0 && result.data.length > 0) {
-                        console.error("All minute data points were skipped due to time format issues. Check console for details.");
-                    } else if (firstValidPoint) {
-                        console.log("First valid chart point:", firstValidPoint);
+                        console.error("All minute data points were skipped.");
                     }
                 } else {
-                    console.warn("No valid minute data received. Status:", result.status, "Data:", result.data);
+                    console.warn("No valid minute data received.");
                 }
 
-                // 修改：移除“暂无分时数据”的文本提示逻辑，即使没有数据也初始化图表，展示空白的走势图框架
-                
                 // 获取昨收价用于 BaselineSeries
                 let preClose = 0;
                 if (currentDetailData && currentDetailData.pre_close > 0) {
@@ -1301,7 +1253,6 @@
                 } else if (lineData.length > 0) {
                     preClose = lineData[0].value; 
                 } else {
-                    // 如果没有数据，默认基准价为0，或者可以从当前详情数据中获取大概价格作为基准
                     preClose = currentDetailData ? currentDetailData.price : 0;
                 }
 
@@ -1320,24 +1271,17 @@
                         secondsVisible: false,
                         fixLeftEdge: false,
                         fixRightEdge: false,
-                        // 新增：自定义刻度标记格式化，确保显示 HH:mm 格式
+                        // 使用 Unix 时间戳时，Lightweight Charts 会自动格式化
+                        // 如果需要自定义，可以使用 tickMarkFormatter
                         tickMarkFormatter: (time, tickMarkType, locale) => {
-                            // time 是 YYYY-MM-DD HH:mm 格式的字符串
-                            // 我们只需要提取 HH:mm 部分
-                            if (typeof time === 'string') {
-                                const parts = time.split(' ');
-                                if (parts.length >= 2) {
-                                    return parts[1]; // 返回 HH:mm
-                                }
-                            }
-                            return '';
+                            // time 是 Unix 时间戳
+                            const date = new Date(time * 1000);
+                            const hours = date.getHours().toString().padStart(2, '0');
+                            const minutes = date.getMinutes().toString().padStart(2, '0');
+                            return `${hours}:${minutes}`;
                         },
-                        // 修改：优化时间轴显示，防止只有一个时间点
-                        // 移除固定的 barSpacing，让库根据容器宽度自动计算，避免挤压
-                        rightOffset: 0, // 移除右侧留白，让图表填满
-                        minBarSpacing: 0.5, // 允许更密集的显示
-                        // 新增：显式指定时间类型为 'time'，确保正确解析字符串
-                        type: 'time', 
+                        rightOffset: 0,
+                        minBarSpacing: 0.5,
                     },
                 });
 
@@ -1354,7 +1298,6 @@
                         lineWidth: 2,
                         lastValueVisible: true,
                     });
-                    // 即使 lineData 为空，setData([]) 也是安全的，图表将显示为空白网格
                     baselineSeries.setData(baselineData);
                 } else {
                     // 降级方案：单色 AreaSeries
@@ -1388,21 +1331,14 @@
                         visible: true,
                         timeVisible: true,
                         secondsVisible: false,
-                        // 新增：同步自定义刻度标记格式化
                         tickMarkFormatter: (time, tickMarkType, locale) => {
-                            if (typeof time === 'string') {
-                                const parts = time.split(' ');
-                                if (parts.length >= 2) {
-                                    return parts[1];
-                                }
-                            }
-                            return '';
+                            const date = new Date(time * 1000);
+                            const hours = date.getHours().toString().padStart(2, '0');
+                            const minutes = date.getMinutes().toString().padStart(2, '0');
+                            return `${hours}:${minutes}`;
                         },
-                        // 修改：同步优化时间轴显示
                         rightOffset: 0,
                         minBarSpacing: 0.5,
-                        // 新增：显式指定时间类型
-                        type: 'time',
                     },
                 });
 
@@ -1435,8 +1371,6 @@
                 
             } catch (error) {
                 console.error("Error rendering day chart:", error);
-                // 修改：出错时也不显示文本错误，而是记录日志，保持界面整洁或显示空白图表
-                // priceContainer.innerText = "图表渲染错误: " + error.message;
             }
         }
 
