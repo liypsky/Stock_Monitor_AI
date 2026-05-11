@@ -1,9 +1,6 @@
 针对您的需求，我将对 /stock-monitor-tyi/static/index.html 进行以下修改：
 
-替换依赖库：移除 Chart.js 及其相关插件（Financial, Zoom, Hammer, Luxon Adapter），引入 lightweight-charts。
-简化 HTML 结构：将原来的多个 <canvas> 替换为用于 Lightweight Charts 的 <div> 容器。
-重写 JS 逻辑：
-移除所有 Chart.js 相关的初始化和渲染代码。
+
 实现基于 lightweight-charts 的分时图和 K 线图渲染逻辑。
 配置红涨绿跌配色。
 实现主图（价格/K线）与副图（成交量）的时间轴同步。

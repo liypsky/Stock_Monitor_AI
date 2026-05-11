@@ -303,11 +303,38 @@ async fn get_stock_detail(
 ) -> Json<Value> {
     if let Some(code) = params.get("code") {
         let normalized_code = normalize_stock_code(code);
-        let client = reqwest::Client::new();
+        
+        // 修改：构建专用 Client，强制 HTTP/1.1 并增强 Header
+        let client = reqwest::Client::builder()
+            .default_headers({
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(
+                    "User-Agent", 
+                    reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                );
+                headers.insert(
+                    "Referer", 
+                    reqwest::header::HeaderValue::from_static("https://finance.sina.com.cn/")
+                );
+                headers.insert(
+                    "Accept",
+                    reqwest::header::HeaderValue::from_static("*/*")
+                );
+                headers
+            })
+            .timeout(std::time::Duration::from_secs(10))
+            .http1_only() // 新增：强制 HTTP/1.1
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         let url = format!("http://hq.sinajs.cn/list={}", normalized_code);
         
         match client.get(&url).send().await {
             Ok(resp) => {
+                if !resp.status().is_success() {
+                     eprintln!("❌ Detail Fetch HTTP Error: {} for {}", resp.status(), normalized_code);
+                     return Json(json!({"status": "error", "msg": format!("HTTP {}", resp.status())}));
+                }
                 if let Ok(bytes) = resp.bytes().await {
                     let (text, _, _) = GBK.decode(&bytes);
                     if let Some(cap) = RE_SINA_DATA.captures(&text) {
@@ -621,6 +648,7 @@ async fn add_index(
 }
 
 async fn fetch_realtime_data(state: AppState, notify: Arc<Notify>) {
+    // 修改：构建更健壮的 Client，强制 HTTP/1.1，增加更完整的 Header
     let client = reqwest::Client::builder()
         .default_headers({
             let mut headers = reqwest::header::HeaderMap::new();
@@ -630,12 +658,26 @@ async fn fetch_realtime_data(state: AppState, notify: Arc<Notify>) {
             );
             headers.insert(
                 "Referer", 
-                reqwest::header::HeaderValue::from_static("http://finance.sina.com.cn/")
+                reqwest::header::HeaderValue::from_static("https://finance.sina.com.cn/")
+            );
+            headers.insert(
+                "Accept",
+                reqwest::header::HeaderValue::from_static("*/*")
+            );
+            headers.insert(
+                "Accept-Language",
+                reqwest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8")
             );
             headers
         })
+        .timeout(std::time::Duration::from_secs(10))
+        .pool_max_idle_per_host(0) 
+        .http1_only() // 新增：强制使用 HTTP/1.1，避免 HTTP/2 被拦截
         .build()
-        .unwrap();
+        .unwrap_or_else(|e| {
+            eprintln!("❌ Failed to build HTTP client: {}", e);
+            reqwest::Client::new()
+        });
 
     loop {
         // 动态获取刷新间隔 (数据获取间隔)
@@ -660,29 +702,93 @@ async fn fetch_realtime_data(state: AppState, notify: Arc<Notify>) {
 
         let url = format!("http://hq.sinajs.cn/list={}", all_codes.join(","));
         
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    eprintln!("❌ HTTP Error: {}", resp.status());
-                    continue;
-                }
+        // 新增：增加重试逻辑，最多重试2次
+        let mut retries = 2;
+        let mut success = false;
 
-                match resp.bytes().await {
-                    Ok(bytes) => {
-                        let (text, _, _) = GBK.decode(&bytes);
-                        let parsed = parse_sina_data(&text);
-                        
-                        let mut cache = state.market_data.write().await;
-                        *cache = parsed;
+        while retries >= 0 && !success {
+            match client.get(&url).send().await {
+                Ok(resp) => {
+                    if !resp.status().is_success() {
+                        eprintln!("❌ HTTP Error: {} for URL: {}", resp.status(), url);
+                        // 如果是 403，可能是 IP 被封或 Header 不足，尝试等待更长时间或记录警告
+                        if resp.status() == 403 {
+                            eprintln!("⚠️ 403 Forbidden. Sina might be blocking this IP or request pattern.");
+                        }
+                        // 如果是 403 或 404，重试通常无效，但为了稳健性仍重试一次
+                        if resp.status().is_client_error() {
+                             // 对于 403，短暂等待后重试，也许能恢复
+                             if resp.status() == 403 && retries > 0 {
+                                 retries -= 1;
+                                 tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                                 continue;
+                             }
+                             break;
+                        }
+                        retries -= 1;
+                        if retries >= 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            continue;
+                        }
+                    } else {
+                        match resp.bytes().await {
+                            Ok(bytes) => {
+                                let (text, _, _) = GBK.decode(&bytes);
+                                let parsed = parse_sina_data(&text);
+                                
+                                // 只有解析到数据时才更新缓存，避免空数据覆盖有效数据
+                                if !parsed.is_empty() {
+                                    let mut cache = state.market_data.write().await;
+                                    *cache = parsed;
+                                    success = true;
+                                } else {
+                                    eprintln!("⚠️ Parsed data is empty for URL: {}", url);
+                                    retries -= 1;
+                                    if retries >= 0 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                        continue;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("❌ Failed to read response bytes: {}", e);
+                                retries -= 1;
+                                if retries >= 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                    continue;
+                                }
+                            }
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("❌ Failed to read response bytes: {}", e);
+                }
+                Err(e) => {
+                    // 修改：更详细的错误日志，帮助诊断 Connection refused
+                    eprintln!("❌ Fetch error (Attempt {}): {:?} for URL: {}", 2 - retries, e, url);
+                    
+                    // 如果是连接拒绝或超时，等待后重试
+                    if e.is_timeout() || e.is_connect() {
+                        retries -= 1;
+                        if retries >= 0 {
+                            // 指数退避等待
+                            tokio::time::sleep(std::time::Duration::from_millis(1000 * (3 - retries) as u64)).await;
+                            continue;
+                        }
+                    } else {
+                        // 其他错误（如 DNS 解析失败）通常重试无效，但为了稳健性仍可重试一次
+                        retries -= 1;
+                        if retries >= 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                            continue;
+                        }
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("❌ Fetch error: {}", e);
-            }
+            // 如果执行到这里，说明要么成功，要么重试耗尽
+            break;
+        }
+
+        if !success {
+            eprintln!("⚠️ Failed to fetch market data after retries. Keeping old data.");
         }
     }
 }
@@ -1013,6 +1119,12 @@ async fn fetch_kline_data_from_eastmoney(normalized_code: &str, klt: &str, lmt: 
             Ok(resp) => {
                 if !resp.status().is_success() {
                     eprintln!("Fetch EastMoney KLine HTTP Error: {} for {}", resp.status(), normalized_code);
+                    // HTTP 错误通常重试无效，除非是 5xx
+                    if resp.status().is_server_error() && retries > 0 {
+                        retries -= 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        continue;
+                    }
                     return None;
                 }
 
@@ -1073,10 +1185,13 @@ async fn fetch_kline_data_from_eastmoney(normalized_code: &str, klt: &str, lmt: 
                         }
                     } else {
                         eprintln!("Parse EastMoney KLine JSON Error for {}", normalized_code);
+                        // 解析错误重试通常无效
+                        return None;
                     }
+                } else {
+                    eprintln!("Failed to read response text for {}", normalized_code);
+                    return None;
                 }
-                // 如果 text 读取成功但解析失败，跳出重试循环，因为重试大概率一样
-                return None; // 修复：直接返回 None，而不是 break
             }
             Err(e) => {
                 // 打印更详细的错误信息，帮助判断是 DNS、TLS 还是连接重置

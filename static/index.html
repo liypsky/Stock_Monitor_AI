@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>A股实时监控中心</title>
-    <!-- 1. Lightweight Charts (替代 Chart.js 及其插件) -->
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <!-- 1. Lightweight Charts (更新为明确的 v4.1.0 版本，确保 API 一致性) -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     
     <style>
         :root { --primary: #d81e06; --bg: #f5f5f5; --card: #fff; --up: #f43f3e; --down: #00b42a; }
@@ -1141,10 +1141,16 @@
                     throw new Error("Invalid data format");
                 }
 
+                // 获取容器实际尺寸，确保不为0
+                const width = priceContainer.clientWidth || 600;
+                const height = priceContainer.clientHeight || 300;
+                const volWidth = volumeContainer.clientWidth || 600;
+                const volHeight = volumeContainer.clientHeight || 100;
+
                 // 创建K线主图
                 kLinePriceChart = LightweightCharts.createChart(priceContainer, {
-                    width: priceContainer.clientWidth,
-                    height: priceContainer.clientHeight,
+                    width: width,
+                    height: height,
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
                     grid: { vertLines: { color: '#f0f0f0' }, horzLines: { color: '#f0f0f0' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -1152,14 +1158,42 @@
                     timeScale: { borderColor: '#cccccc' },
                 });
 
-                const candleSeries = kLinePriceChart.addCandlestickSeries({
-                    upColor: '#f43f3e',
-                    downColor: '#00b42a',
-                    borderUpColor: '#f43f3e',
-                    borderDownColor: '#00b42a',
-                    wickUpColor: '#f43f3e',
-                    wickDownColor: '#00b42a',
-                });
+                // 修复：增加对 addCandlestickSeries 存在的检查，并提供降级处理
+                let candleSeries;
+                if (typeof kLinePriceChart.addCandlestickSeries === 'function') {
+                    candleSeries = kLinePriceChart.addCandlestickSeries({
+                        upColor: '#f43f3e',
+                        downColor: '#00b42a',
+                        borderUpColor: '#f43f3e',
+                        borderDownColor: '#00b42a',
+                        wickUpColor: '#f43f3e',
+                        wickDownColor: '#00b42a',
+                    });
+                } else if (typeof kLinePriceChart.addSeries === 'function') {
+                    // 降级方案：尝试使用通用 addSeries (适用于某些特定版本或构建)
+                    console.warn("[KChart] addCandlestickSeries not found, trying addSeries...");
+                    try {
+                        // 注意：addSeries 通常需要传入 SeriesConstructor，这里假设环境支持或直接报错以便排查
+                        // 在 v4 standalone 中通常直接暴露构造器，但如果没有，则无法渲染
+                        if (typeof LightweightCharts.CandlestickSeries !== 'undefined') {
+                            candleSeries = kLinePriceChart.addSeries(LightweightCharts.CandlestickSeries, {
+                                upColor: '#f43f3e',
+                                downColor: '#00b42a',
+                                borderUpColor: '#f43f3e',
+                                borderDownColor: '#00b42a',
+                                wickUpColor: '#f43f3e',
+                                wickDownColor: '#00b42a',
+                            });
+                        } else {
+                            throw new Error("CandlestickSeries constructor not found in LightweightCharts");
+                        }
+                    } catch (e) {
+                        throw new Error("Failed to create Candlestick Series: " + e.message);
+                    }
+                } else {
+                    throw new Error("LightweightCharts chart instance does not support adding series. Check library version.");
+                }
+                
                 candleSeries.setData(candleData);
 
                 // 添加均线 (MA) - Lightweight Charts 没有内置 MA，需用 LineSeries 模拟
@@ -1186,8 +1220,8 @@
 
                 // 创建K线成交量图
                 kLineVolumeChart = LightweightCharts.createChart(volumeContainer, {
-                    width: volumeContainer.clientWidth,
-                    height: volumeContainer.clientHeight,
+                    width: volWidth,
+                    height: volHeight,
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
                     grid: { vertLines: { visible: false }, horzLines: { visible: false } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -1221,14 +1255,26 @@
                 new ResizeObserver(entries => {
                     if (entries.length === 0 || entries[0].target !== priceContainer) { return; }
                     const newRect = entries[0].contentRect;
-                    kLinePriceChart.applyOptions({ height: newRect.height, width: newRect.width });
-                    kLineVolumeChart.applyOptions({ height: volumeContainer.clientHeight, width: newRect.width });
+                    if (newRect.width > 0 && newRect.height > 0) {
+                        kLinePriceChart.applyOptions({ height: newRect.height, width: newRect.width });
+                        kLineVolumeChart.applyOptions({ height: volumeContainer.clientHeight, width: newRect.width });
+                    }
                 }).observe(priceContainer);
 
-                // 默认显示最近 N 条
+                // 默认显示最近 N 条，并确保内容适配
+                // 使用 setTimeout 确保 DOM 渲染完成后再调整视图
                 setTimeout(() => {
-                    kLinePriceChart.timeScale().scrollToPosition(0, false);
-                }, 100);
+                    if (kLinePriceChart && kLineVolumeChart) {
+                         // 再次确认尺寸，防止 display:none 切换时的尺寸为0问题
+                        const finalWidth = priceContainer.clientWidth;
+                        const finalHeight = priceContainer.clientHeight;
+                        if (finalWidth > 0 && finalHeight > 0) {
+                             kLinePriceChart.applyOptions({ width: finalWidth, height: finalHeight });
+                             kLineVolumeChart.applyOptions({ width: finalWidth, height: volumeContainer.clientHeight });
+                        }
+                        kLinePriceChart.timeScale().fitContent();
+                    }
+                }, 50);
 
             } catch (e) {
                 console.error("[KChart] Critical error:", e);
