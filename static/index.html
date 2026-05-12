@@ -1239,37 +1239,12 @@
                         if (!isNaN(dateObj.getTime())) {
                             timestamp = Math.floor(dateObj.getTime() / 1000);
                         } else {
-                            // 如果解析失败，尝试根据索引生成时间（兜底策略）
-                            // 假设当天交易日，从 9:30 开始
+                            // 新增：如果后端返回的时间格式无法解析，则跳过该点，避免错误映射
                             if (!debugLogged) {
-                                console.warn("Failed to parse time:", timeStr, "using fallback generation");
+                                console.error("Failed to parse time string from backend:", timeStr, ". Please check backend format.");
                                 debugLogged = true;
                             }
-                            
-                            // 获取今天日期
-                            const today = new Date();
-                            const year = today.getFullYear();
-                            const month = today.getMonth();
-                            const day = today.getDate();
-                            
-                            // 计算分钟偏移
-                            // 上午: 0-119 (9:30-11:30)
-                            // 下午: 120-239 (13:00-15:00)
-                            let hour, minute;
-                            if (index < 120) {
-                                const totalMinutes = 9 * 60 + 30 + index;
-                                hour = Math.floor(totalMinutes / 60);
-                                minute = totalMinutes % 60;
-                            } else {
-                                const afternoonIndex = index - 120;
-                                if (afternoonIndex >= 120) return; // 超出交易时间
-                                const totalMinutes = 13 * 60 + afternoonIndex;
-                                hour = Math.floor(totalMinutes / 60);
-                                minute = totalMinutes % 60;
-                            }
-                            
-                            const fallbackDate = new Date(year, month, day, hour, minute, 0);
-                            timestamp = Math.floor(fallbackDate.getTime() / 1000);
+                            return; 
                         }
 
                         // 防止重复时间点
@@ -1438,20 +1413,10 @@
                 });
 
                 // 修改：默认显示最近2天的数据
-                // 使用 setVisibleRange 强制聚焦在最近的数据上，而不是 fitContent 可能导致的全量缩放
+                // 使用 fitContent() 自动适配所有加载的数据（即后端返回的2天数据）
+                // 这样可以确保前一天和当天的数据都能完整展示，且比例正确
                 if (lineData.length > 0) {
-                    // 计算2天前的大致时间戳作为起始点
-                    // 注意：这里简单地将最后一个时间点减去2天的秒数
-                    // 更精确的做法是找到倒数第480个点的时间，但考虑到数据可能不足2天，使用时间计算更稳健
-                    const lastTime = lineData[lineData.length - 1].time;
-                    const twoDaysInSeconds = 2 * 24 * 60 * 60; 
-                    const fromTime = lastTime - twoDaysInSeconds;
-                    
-                    // 设置可见范围
-                    dayPriceChart.timeScale().setVisibleRange({
-                        from: fromTime,
-                        to: lastTime + 60 * 60 // 向右多留一点空间，避免贴边
-                    });
+                    dayPriceChart.timeScale().fitContent();
                 } else {
                     // 如果没有数据，则适应内容
                     dayPriceChart.timeScale().fitContent();

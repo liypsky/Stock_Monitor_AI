@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::fs;
+use chrono::Datelike;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockInfo {
@@ -918,9 +919,27 @@ async fn get_stock_minute_data(
             format!("0.{}", normalized_code)
         };
 
+        // 新增：计算需要请求的天数 (ndays)
+        // 目标：始终获取最近两个交易日的数据
+        // 周一 (0): 需要上周五 + 周一。由于中间隔了周六日，ndays=3 才能涵盖周五到周一的时间跨度
+        // 周二 (1): 需要周一 + 周二。连续交易日，ndays=2
+        // 周三 (2): 需要周二 + 周三。连续交易日，ndays=2
+        // 周四 (3): 需要周三 + 周四。连续交易日，ndays=2
+        // 周五 (4): 需要周四 + 周五。连续交易日，ndays=2
+        // 周末 (5,6): 通常不开盘，若查询则看最近一天或两天，这里统一处理为2天以获取周五数据
+        
+        let now = chrono::Local::now();
+        let weekday = now.weekday().num_days_from_monday(); // Monday = 0, Sunday = 6
+        
+        let ndays = if weekday == 0 {
+            3 // 周一：取3天以覆盖上周五
+        } else {
+            2 // 其他交易日：取2天以覆盖昨天和今天
+        };
+
         let url = format!(
-            "http://push2.eastmoney.com/api/qt/stock/trends2/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&ut=fa5fd1943c7b386f172d6893dbfba10b&ndays=1&iscr=0&iscca=0&datalen={}",
-            secid, datalen
+            "http://push2.eastmoney.com/api/qt/stock/trends2/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&ut=fa5fd1943c7b386f172d6893dbfba10b&ndays={}&iscr=0&iscca=0&datalen={}",
+            secid, ndays, datalen
         );
 
         let client = reqwest::Client::builder()
