@@ -61,17 +61,7 @@
         .btn:hover { opacity: 0.9; }
         .btn-secondary { background: #64748b; }
         .btn-small { padding: 4px 8px; font-size: 12px; margin-right: 5px; background: #e2e8f0; color: #475569; }
-
-        /* 表格优化 */
-        table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 8px; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: var(--font-size-base); }
-        th { background: #fafafa; cursor: pointer; user-select: none; font-weight: 600; color: #475569; white-space: nowrap; }
-        th:hover { background: #f1f5f9; }
-        .up { color: var(--up); } .down { color: var(--down); }
-        
-        /* 拖拽样式 */
-        tr.dragging { opacity: 0.5; background: #f0f0f0; }
-        tr.drag-over { border-top: 2px solid var(--primary); }
+        .btn-ai-config { background: #8b5cf6; color: white; } /* 新增：AI配置按钮样式 */
 
         /* 右键菜单 */
         #context-menu {
@@ -93,9 +83,18 @@
         #context-menu div:hover { background: #f5f5f5; color: var(--primary); }
         #context-menu .divider { height: 1px; background: #eee; margin: 5px 0; padding: 0; }
 
+        /* AI 配置弹窗 */
+        #ai-config-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 102; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
+        .ai-config-content { background: #fff; width: 90%; max-width: 800px; padding: 25px; border-radius: 12px; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2); max-height: 90vh; overflow-y: auto; }
+        .ai-config-item { border: 1px solid #eee; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: #fafafa; }
+        .ai-config-item h4 { margin: 0 0 10px 0; font-size: 16px; color: #333; }
+        .ai-config-row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+        .ai-config-row label { width: 100px; font-size: 12px; color: #666; line-height: 32px; }
+        .ai-config-row input, .ai-config-row select { flex: 1; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        
         /* AI 分析弹窗 */
         #ai-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 101; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
-        .ai-content { background: #fff; width: 90%; max-width: 600px; padding: 15px; border-radius: 12px; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
+        .ai-content { background: #fff; width: 90%; max-width: 600px; padding: 25px; border-radius: 12px; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
 
         /* 详情弹窗优化 */
         #detail-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 100; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
@@ -230,7 +229,10 @@
         <!-- 指数看板 -->
         <div class="section-header">
             <div class="section-title">📊 大盘指数 </div>
-            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="toggleIndexInput()">+ 添加指数</button>
+            <div style="display:flex; gap:10px;">
+                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="showAiConfig()">⚙️ AI 配置</button>
+                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="toggleIndexInput()">+ 添加指数</button>
+            </div>
         </div>
         
         <div id="index-input-area">
@@ -363,6 +365,22 @@
         </div>
     </div>
 
+    <!-- AI 配置弹窗 -->
+    <div id="ai-config-view">
+        <div class="ai-config-content">
+            <span class="close-btn" onclick="closeAiConfig()">&times;</span>
+            <h2 style="margin-top:0;">AI 服务配置</h2>
+            <div id="ai-config-list">
+                <!-- 动态生成配置项 -->
+                <div style="text-align:center; color:#999; padding:20px;">加载中...</div>
+            </div>
+            <div style="margin-top:20px; text-align:right;">
+                <button class="btn btn-secondary" onclick="addNewAiConfig()">+ 新增配置</button>
+                <button class="btn" onclick="saveAiConfigs()">保存所有配置</button>
+            </div>
+        </div>
+    </div>
+
     <!-- AI 分析弹窗 -->
     <div id="ai-view">
         <div class="ai-content">
@@ -401,6 +419,9 @@
         let kLineCache = {}; 
         // 修改：K线图默认显示数量，减少以聚焦近期走势
         const KLINE_DEFAULT_VIEW_COUNT = 40; 
+        
+        // 新增：AI 配置本地缓存
+        let aiConfigs = [];
 
         // 新增：启动或重启定时器
         function startRefreshTimer() {
@@ -412,10 +433,7 @@
         async function init() {
             await refreshAll();
             startRefreshTimer(); // 启动定时器
-            
-            document.addEventListener('click', () => {
-                document.getElementById('context-menu').style.display = 'none';
-            });
+            loadAiConfigs(); // 加载 AI 配置
         }
 
         async function refreshAll() {
@@ -746,6 +764,268 @@
         async function contextAction(action) {
             const code = contextMenuTargetCode;
             if (!code) return;
+
+            if (action === 'top') {
+                configStocks = [code, ...configStocks.filter(c => c !== code)];
+                renderTable();
+                await fetch('/api/reorder_stocks', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ stocks: configStocks })
+                });
+            } else if (action === 'bottom') {
+                configStocks = [...configStocks.filter(c => c !== code), code];
+                renderTable();
+                await fetch('/api/reorder_stocks', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ stocks: configStocks })
+                });
+            } else if (action === 'delete') {
+                if (confirm(`确定删除 ${code} 吗？`)) {
+                    configStocks = configStocks.filter(c => c !== code);
+                    renderTable();
+                    await fetch('/api/remove_stock', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ code: code })
+                    });
+                }
+            }
+        }
+
+        function sortTable(col) {
+            if (col === sortCol) {
+                sortAsc = !sortAsc;
+            } else {
+                sortCol = col;
+                sortAsc = true;
+            }
+            isManualSort = false;
+            renderTable();
+        }
+
+        function toggleIndexInput() {
+            const area = document.getElementById('index-input-area');
+            area.style.display = area.style.display === 'block' ? 'none' : 'block';
+        }
+
+        function addIndex() {
+            const input = document.getElementById('index-input');
+            const code = input.value.trim();
+            if (code) {
+                if (configIndices.includes(code)) {
+                    alert("该指数已存在");
+                } else {
+                    configIndices.push(code);
+                    renderIndices();
+                    input.value = '';
+                    fetch('/api/add_index', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ code: code })
+                    }).then(() => {
+                        console.log("Index added");
+                    }).catch(() => {
+                        alert("网络错误");
+                    });
+                }
+            }
+        }
+
+        function updateConfig() {
+            const pageRefreshInput = document.getElementById('page-refresh-input');
+            const dataFetchInput = document.getElementById('data-fetch-input');
+            const pageRefresh = parseInt(pageRefreshInput.value);
+            const dataFetch = parseInt(dataFetchInput.value);
+
+            if (isNaN(pageRefresh) || isNaN(dataFetch) || pageRefresh < 1 || dataFetch < 1) {
+                alert("请输入有效的刷新间隔");
+                return;
+            }
+
+            fetch('/api/update_config', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ page_refresh_interval: pageRefresh, data_fetch_interval: dataFetch })
+            }).then(() => {
+                pageRefreshInterval = pageRefresh;
+                dataFetchInterval = dataFetch;
+                console.log("Config updated");
+            }).catch(() => {
+                alert("网络错误");
+            });
+        }
+
+        function addStock() {
+            const input = document.getElementById('stock-input');
+            const code = input.value.trim();
+            if (code) {
+                if (configStocks.includes(code)) {
+                    alert("该股票已存在");
+                } else {
+                    configStocks.push(code);
+                    renderTable();
+                    input.value = '';
+                    fetch('/api/add_stock', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ code: code })
+                    }).then(() => {
+                        console.log("Stock added");
+                    }).catch(() => {
+                        alert("网络错误");
+                    });
+                }
+            }
+        }
+
+        // --- AI 配置管理 ---
+        async function loadAiConfigs() {
+            try {
+                const res = await fetch('/api/ai_config');
+                const result = await res.json();
+                if (result.status === 'success' && result.data) {
+                    aiConfigs = result.data;
+                } else {
+                    aiConfigs = [];
+                }
+            } catch (e) {
+                console.error("Load AI config error:", e);
+                aiConfigs = [];
+            }
+        }
+
+        function showAiConfig() {
+            document.getElementById('ai-config-view').style.display = 'flex';
+            renderAiConfigs();
+        }
+
+        function closeAiConfig() {
+            document.getElementById('ai-config-view').style.display = 'none';
+        }
+
+        function renderAiConfigs() {
+            const container = document.getElementById('ai-config-list');
+            container.innerHTML = '';
+
+            if (aiConfigs.length === 0) {
+                container.innerHTML = '<div style="text-align:center; color:#999; padding:20px;">暂无配置，请点击“新增配置”</div>';
+                return;
+            }
+
+            aiConfigs.forEach((config, index) => {
+                const div = document.createElement('div');
+                div.className = 'ai-config-item';
+                div.innerHTML = `
+                    <h4>
+                        <input type="text" value="${config.name || '未命名配置'}" onchange="updateAiConfigField(${index}, 'name', this.value)" style="width:200px; font-weight:bold; border:none; background:transparent; border-bottom:1px solid #ddd;">
+                        <button class="btn btn-small" style="float:right; background:#ef4444; color:white;" onclick="removeAiConfig(${index})">删除</button>
+                    </h4>
+                    <div class="ai-config-row">
+                        <label>类型</label>
+                        <select onchange="updateAiConfigField(${index}, 'type', this.value)">
+                            <option value="openai" ${config.type === 'openai' ? 'selected' : ''}>OpenAI Compatible</option>
+                            <option value="ollama" ${config.type === 'ollama' ? 'selected' : ''}>Ollama</option>
+                            <option value="gemini" ${config.type === 'gemini' ? 'selected' : ''}>Gemini</option>
+                        </select>
+                    </div>
+                    <div class="ai-config-row">
+                        <label>API URL</label>
+                        <input type="text" value="${config.apiUrl || ''}" onchange="updateAiConfigField(${index}, 'apiUrl', this.value)" placeholder="https://api.openai.com/v1">
+                    </div>
+                    <div class="ai-config-row">
+                        <label>API Key</label>
+                        <input type="password" value="${config.apiKey || ''}" onchange="updateAiConfigField(${index}, 'apiKey', this.value)" placeholder="sk-...">
+                    </div>
+                    <div class="ai-config-row">
+                        <label>主模型</label>
+                        <input type="text" value="${config.mainModels || config.model || ''}" onchange="updateAiConfigField(${index}, 'mainModels', this.value)" placeholder="gpt-3.5-turbo">
+                    </div>
+                    <div class="ai-config-row">
+                        <label>备选模型</label>
+                        <input type="text" value="${config.fallbackModels || ''}" onchange="updateAiConfigField(${index}, 'fallbackModels', this.value)" placeholder="gpt-4, claude-3">
+                    </div>
+                    <div class="ai-config-row">
+                        <label>超时(秒)</label>
+                        <input type="number" value="${config.timeoutSeconds || 60}" onchange="updateAiConfigField(${index}, 'timeoutSeconds', parseInt(this.value))" min="10">
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        function updateAiConfigField(index, field, value) {
+            if (!aiConfigs[index]) return;
+            
+            // 兼容旧字段 model -> mainModels
+            if (field === 'mainModels') {
+                aiConfigs[index].mainModels = value;
+                aiConfigs[index].model = value; // 同步更新 model 以兼容后端旧逻辑
+            } else if (field === 'type') {
+                aiConfigs[index].type = value;
+                // 根据类型自动填充一些默认 URL
+                if (value === 'ollama' && !aiConfigs[index].apiUrl) {
+                    aiConfigs[index].apiUrl = 'http://localhost:11434/api/chat';
+                } else if (value === 'gemini' && !aiConfigs[index].apiUrl) {
+                    aiConfigs[index].apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
+                } else if (value === 'openai' && !aiConfigs[index].apiUrl) {
+                    aiConfigs[index].apiUrl = 'https://api.openai.com/v1';
+                }
+            } else {
+                aiConfigs[index][field] = value;
+            }
+            // 重新渲染以反映变化（特别是 URL 自动填充时）
+            // 注意：直接修改 input value 不会触发 onchange，所以这里不需要完全重绘，除非是结构变化
+            // 为了简单，这里只更新内存，保存时再提交
+        }
+
+        function addNewAiConfig() {
+            aiConfigs.push({
+                id: 'new_' + Date.now(),
+                name: '新配置',
+                type: 'openai',
+                apiUrl: '',
+                apiKey: '',
+                mainModels: '',
+                fallbackModels: '',
+                model: '',
+                timeoutSeconds: 60
+            });
+            renderAiConfigs();
+        }
+
+        function removeAiConfig(index) {
+            if (confirm('确定删除此配置吗？')) {
+                aiConfigs.splice(index, 1);
+                renderAiConfigs();
+            }
+        }
+
+        async function saveAiConfigs() {
+            try {
+                const res = await fetch('/api/update_ai_config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ ai_configs: aiConfigs })
+                });
+                const result = await res.json();
+                if (result.status === 'success') {
+                    alert('AI 配置已保存');
+                    closeAiConfig();
+                } else {
+                    alert('保存失败: ' + result.msg);
+                }
+            } catch (e) {
+                console.error("Save AI config error:", e);
+                alert('网络错误，保存失败');
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>
 
             if (action === 'delete') {
                 if(confirm(`确定删除 ${code} 吗？`)) {

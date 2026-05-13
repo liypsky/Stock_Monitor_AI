@@ -20,3 +20,7 @@ tmp/
 
 Doc/note_step.md
 Cargo.lock
+static/0513.html
+src/0513.rs
+src/main.rs－
+data/config.json
