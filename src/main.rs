@@ -110,7 +110,8 @@ fn default_page_refresh_interval() -> u64 {
 
 // 新增：加载配置的辅助函数
 fn load_config_from_file() -> Option<AppConfig> {
-    let config_path = Path::new("data/config.json");
+    // 修改：配置文件路径改为 setting/config.json
+    let config_path = Path::new("setting/config.json");
     if config_path.exists() {
         if let Ok(content) = fs::read_to_string(config_path) {
             if let Ok(mut config) = serde_json::from_str::<AppConfig>(&content) {
@@ -121,10 +122,10 @@ fn load_config_from_file() -> Option<AppConfig> {
                 if config.page_refresh_interval == 0 {
                     config.page_refresh_interval = 3;
                 }
-                println!("✅ Loaded config from data/config.json");
+                println!("✅ Loaded config from setting/config.json");
                 return Some(config);
             } else {
-                eprintln!("⚠️ Failed to parse config.json, using defaults");
+                eprintln!("⚠️ Failed to parse setting/config.json, using defaults");
             }
         }
     }
@@ -133,11 +134,11 @@ fn load_config_from_file() -> Option<AppConfig> {
 
 // 新增：保存配置的辅助函数
 fn save_config_to_file(indices: &[String], stocks: &[String], data_fetch_interval: u64, page_refresh_interval: u64) {
-    // 确保 data 目录存在
-    let data_dir = Path::new("data");
+    // 修改：确保 setting 目录存在
+    let data_dir = Path::new("setting");
     if !data_dir.exists() {
         if let Err(e) = fs::create_dir_all(data_dir) {
-            eprintln!("❌ Failed to create data directory: {}", e);
+            eprintln!("❌ Failed to create setting directory: {}", e);
             return;
         }
     }
@@ -149,13 +150,14 @@ fn save_config_to_file(indices: &[String], stocks: &[String], data_fetch_interva
         page_refresh_interval,
     };
 
-    let config_path = Path::new("data/config.json");
+    // 修改：配置文件路径改为 setting/config.json
+    let config_path = Path::new("setting/config.json");
     match serde_json::to_string_pretty(&config) {
         Ok(json_str) => {
             if let Err(e) = fs::write(config_path, json_str) {
-                eprintln!("❌ Failed to write config.json: {}", e);
+                eprintln!("❌ Failed to write setting/config.json: {}", e);
             } else {
-                println!("💾 Config saved to data/config.json");
+                println!("💾 Config saved to setting/config.json");
             }
         }
         Err(e) => {
