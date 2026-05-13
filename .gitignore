@@ -18,3 +18,5 @@ tmp/
 .idea/
 .vscode/
 
+Doc/note_step.md
+Cargo.lock
