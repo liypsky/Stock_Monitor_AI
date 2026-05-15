@@ -2,6 +2,10 @@ target/
 .git/
 Cargo.lock
 
+/target/
+*.swp
+*.bak
+
 # 忽略 node_modules 文件夹（前端最常用）
 node_modules/
 

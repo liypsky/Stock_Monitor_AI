@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票监控看板</title>
+    <style>
+        :root {
+            --primary-color: #1890ff;
+            --bg-color: #f0f2f5;
+            --card-bg: #ffffff;
+            --text-color: #333;
+            --border-color: #e8e8e8;
+            --up-color: #cf1322;
+            --down-color: #3f8600;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+
+        /* 指数区域 */
+        .index-section {
+            margin-bottom: 24px;
+        }
+        
+        .section-title {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 12px;
+            border-left: 4px solid var(--primary-color);
+            padding-left: 10px;
+        }
+
+        .index-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .index-card {
+            background: var(--card-bg);
+            padding: 16px;
+            border-radius: 4px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .index-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .index-name { font-size: 14px; color: #666; }
+        .index-value { font-size: 20px; font-weight: bold; margin: 8px 0; }
+        .index-change { font-size: 14px; }
+        .up { color: var(--up-color); }
+        .down { color: var(--down-color); }
+
+        /* 个股列表区域 */
+        .stock-section {
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 4px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+
+        .toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .add-stock-form {
+            display: flex;
+            gap: 10px;
+        }
+
+        input, select, button {
+            padding: 6px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            outline: none;
+        }
+
+        button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        button:hover { opacity: 0.9; }
+        button.secondary { background-color: #fff; color: var(--text-color); border: 1px solid var(--border-color); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            background-color: #fafafa;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        th:hover { background-color: #f0f0f0; }
+
+        /* 模态框 */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .modal {
+            background: white;
+            width: 800px;
+            max-width: 90%;
+            max-height: 90vh;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .modal-header {
+            padding: 16px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+        }
+
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .modal-footer {
+            padding: 16px;
+            border-top: 1px solid var(--border-color);
+            text-align: right;
+        }
+
+        .chart-placeholder {
+            height: 300px;
+            background: #f9f9f9;
+            border: 1px dashed #ccc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 20px;
+            color: #999;
+        }
+
+        .ai-config {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f8f8;
+            border-radius: 4px;
+        }
+
+        .ai-result {
+            min-height: 100px;
+            padding: 15px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: #fff;
+            white-space: pre-wrap;
+        }
+
+        .form-group {
+            margin-bottom: 10px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #666;
+        }
+        .form-group input, .form-group textarea {
+            width: 100%;
+            box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 指数显示区域 -->
+    <div class="index-section">
+        <div class="section-title">大盘指数 (最多8个)</div>
+        <div class="index-grid" id="indexGrid">
+            <!-- 指数卡片将通过JS渲染 -->
+        </div>
+    </div>
+
+    <!-- 个股列表区域 -->
+    <div class="stock-section">
+        <div class="toolbar">
+            <div class="section-title" style="margin:0; border:none; padding:0;">自选股列表</div>
+            <div class="add-stock-form">
+                <input type="text" id="newStockCode" placeholder="代码 (如: 600519)">
+                <input type="text" id="newStockName" placeholder="名称 (如: 贵州茅台)">
+                <button onclick="addStock()">添加</button>
+            </div>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th onclick="sortTable('code')">代码 ↕</th>
+                    <th onclick="sortTable('name')">名称 ↕</th>
+                    <th onclick="sortTable('price')">最新价 ↕</th>
+                    <th onclick="sortTable('change')">涨跌幅 ↕</th>
+                    <th onclick="sortTable('volume')">成交量 ↕</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody id="stockTableBody">
+                <!-- 个股行将通过JS渲染 -->
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 详情模态框 -->
+    <div class="modal-overlay" id="detailModal">
+        <div class="modal">
+            <div class="modal-header">
+                <span id="detailTitle">股票详情</span>
+                <button class="secondary" onclick="closeModal('detailModal')" style="padding: 2px 8px;">×</button>
+            </div>
+            <div class="modal-body">
+                <h4>分时图</h4>
+                <div class="chart-placeholder" id="minuteChart">分时图加载区域...</div>
+                <h4>K线图</h4>
+                <div class="chart-placeholder" id="klineChart">K线图加载区域...</div>
+            </div>
+            <div class="modal-footer">
+                <button class="secondary" onclick="closeModal('detailModal')">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI分析模态框 -->
+    <div class="modal-overlay" id="aiModal">
+        <div class="modal">
+            <div class="modal-header">
+                <span id="aiTitle">AI 智能分析</span>
+                <button class="secondary" onclick="closeModal('aiModal')" style="padding: 2px 8px;">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="ai-config">
+                    <h4>配置参数</h4>
+                    <div class="form-group">
+                        <label>模型选择</label>
+                        <select id="aiModel">
+                            <option value="qwen-max">Qwen-Max</option>
+                            <option value="qwen-plus">Qwen-Plus</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>分析维度 (Prompt)</label>
+                        <textarea id="aiPrompt" rows="3">请结合近期走势、成交量变化及宏观消息面，对该股票进行简要技术面和基本面分析。</textarea>
+                    </div>
+                    <button onclick="runAiAnalysis()">开始分析</button>
+                </div>
+                <div class="ai-result" id="aiResultArea">
+                    AI分析结果将在此显示...
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="secondary" onclick="closeModal('aiModal')">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 模拟数据 ---
+        let indices = [
+            { name: '上证指数', value: 3050.12, change: 0.45 },
+            { name: '深证成指', value: 9876.54, change: -0.23 },
+            { name: '创业板指', value: 1950.33, change: 1.12 },
+            { name: '科创50', value: 850.44, change: 0.88 },
+            { name: '沪深300', value: 3560.21, change: 0.15 },
+            { name: '中证500', value: 5430.11, change: -0.55 },
+            { name: '恒生指数', value: 16500.20, change: -1.20 },
+            { name: '纳斯达克', value: 14500.30, change: 0.90 }
+        ];
+
+        let stocks = [
+            { code: '600519', name: '贵州茅台', price: 1750.00, change: 1.2, volume: 30000 },
+            { code: '000858', name: '五粮液', price: 145.50, change: -0.5, volume: 120000 },
+            { code: '600036', name: '招商银行', price: 32.10, change: 0.3, volume: 500000 },
+            { code: '002594', name: '比亚迪', price: 210.40, change: 2.1, volume: 80000 }
+        ];
+
+        let sortConfig = { key: null, order: 'asc' }; // asc or desc
+
+        // --- 初始化渲染 ---
+        document.addEventListener('DOMContentLoaded', () => {
+            renderIndices();
+            renderStocks();
+        });
+
+        // --- 指数渲染逻辑 ---
+        function renderIndices() {
+            const container = document.getElementById('indexGrid');
+            container.innerHTML = '';
+            // 限制最多8个
+            const displayIndices = indices.slice(0, 8);
+            
+            displayIndices.forEach(idx => {
+                const div = document.createElement('div');
+                div.className = 'index-card';
+                const changeClass = idx.change >= 0 ? 'up' : 'down';
+                const changeSign = idx.change >= 0 ? '+' : '';
+                div.innerHTML = `
+                    <div class="index-name">${idx.name}</div>
+                    <div class="index-value">${idx.value.toFixed(2)}</div>
+                    <div class="index-change ${changeClass}">${changeSign}${idx.change}%</div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        // --- 个股列表渲染逻辑 ---
+        function renderStocks() {
+            const tbody = document.getElementById('stockTableBody');
+            tbody.innerHTML = '';
+
+            // 排序处理
+            if (sortConfig.key) {
+                stocks.sort((a, b) => {
+                    let valA = a[sortConfig.key];
+                    let valB = b[sortConfig.key];
+                    if (typeof valA === 'string') {
+                        valA = valA.toLowerCase();
+                        valB = valB.toLowerCase();
+                    }
+                    if (valA < valB) return sortConfig.order === 'asc' ? -1 : 1;
+                    if (valA > valB) return sortConfig.order === 'asc' ? 1 : -1;
+                    return 0;
+                });
+            }
+
+            stocks.forEach(stock => {
+                const tr = document.createElement('tr');
+                const changeClass = stock.change >= 0 ? 'up' : 'down';
+                const changeSign = stock.change >= 0 ? '+' : '';
+                
+                tr.innerHTML = `
+                    <td>${stock.code}</td>
+                    <td>${stock.name}</td>
+                    <td>${stock.price.toFixed(2)}</td>
+                    <td class="${changeClass}">${changeSign}${stock.change}%</td>
+                    <td>${stock.volume}</td>
+                    <td>
+                        <button class="secondary" style="font-size:12px; padding:4px 8px;" onclick="openDetail('${stock.code}', '${stock.name}')">详情</button>
+                        <button class="secondary" style="font-size:12px; padding:4px 8px;" onclick="openAiAnalysis('${stock.code}', '${stock.name}')">AI分析</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // --- 排序功能 ---
+        function sortTable(key) {
+            if (sortConfig.key === key) {
+                sortConfig.order = sortConfig.order === 'asc' ? 'desc' : 'asc';
+            } else {
+                sortConfig.key = key;
+                sortConfig.order = 'asc';
+            }
+            renderStocks();
+        }
+
+        // --- 添加个股 ---
+        function addStock() {
+            const codeInput = document.getElementById('newStockCode');
+            const nameInput = document.getElementById('newStockName');
+            const code = codeInput.value.trim();
+            const name = nameInput.value.trim();
+
+            if (!code || !name) {
+                alert('请输入代码和名称');
+                return;
+            }
+
+            // 简单去重检查
+            if (stocks.some(s => s.code === code)) {
+                alert('该股票已存在');
+                return;
+            }
+
+            stocks.push({
+                code: code,
+                name: name,
+                price: 0.00, // 初始价格需后续接口获取，这里暂置0
+                change: 0,
+                volume: 0
+            });
+
+            codeInput.value = '';
+            nameInput.value = '';
+            renderStocks();
+        }
+
+        // --- 模态框控制 ---
+        function openDetail(code, name) {
+            document.getElementById('detailTitle').innerText = `${name} (${code}) - 详情`;
+            // 这里应调用图表库初始化分时和K线，目前仅做占位
+            document.getElementById('minuteChart').innerText = `[模拟] ${code} 分时图加载中...`;
+            document.getElementById('klineChart').innerText = `[模拟] ${code} K线图加载中...`;
+            document.getElementById('detailModal').style.display = 'flex';
+        }
+
+        function openAiAnalysis(code, name) {
+            document.getElementById('aiTitle').innerText = `${name} (${code}) - AI分析`;
+            document.getElementById('aiResultArea').innerText = '请配置参数后点击“开始分析”';
+            document.getElementById('aiModal').style.display = 'flex';
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+        }
+
+        // 点击遮罩层关闭
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal-overlay')) {
+                event.target.style.display = 'none';
+            }
+        }
+
+        // --- AI 分析模拟 ---
+        function runAiAnalysis() {
+            const model = document.getElementById('aiModel').value;
+            const prompt = document.getElementById('aiPrompt').value;
+            const resultArea = document.getElementById('aiResultArea');
+            
+            resultArea.innerText = '正在调用 AI 服务进行分析...';
+            
+            // 模拟异步请求
+            setTimeout(() => {
+                const mockResponse = `【模型: ${model}】\n\n基于以下策略分析:\n"${prompt}"\n\n分析结果：\n该股近期呈现震荡上行趋势，成交量温和放大。技术指标MACD金叉向上，建议关注上方压力位。基本面上，公司业绩稳定，具备长期投资价值。请注意市场整体风险。`;
+                resultArea.innerText = mockResponse;
+            }, 1500);
+        }
+    </script>
+</body>
+</html>
