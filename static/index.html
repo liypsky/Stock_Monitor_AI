@@ -35,6 +35,19 @@
         .btn-detail { background-color: #3498db; color: white; }
         .btn-detail:hover { background-color: #2980b9; }
 
+        /* AI 分析按钮样式 */
+        .btn-ai { background-color: #8e44ad; color: white; }
+        .btn-ai:hover { background-color: #732d91; }
+
+        /* 模态框样式 */
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5); }
+        .modal-content { background-color: #fefefe; margin: 10% auto; padding: 20px; border: 1px solid #888; width: 80%; max-width: 800px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+        .close { color: #aaa; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }
+        .close:hover, .close:focus { color: black; text-decoration: none; cursor: pointer; }
+        .ai-result { margin-top: 15px; line-height: 1.6; white-space: pre-wrap; font-family: 'Segoe UI', sans-serif; }
+        .ai-loading { text-align: center; color: #666; font-style: italic; }
+        .ai-header { border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 10px; font-weight: bold; color: #8e44ad; }
+
         /* 状态栏 */
         .status-bar { margin-top: 20px; text-align: right; font-size: 0.8em; color: #95a5a6; }
     </style>
@@ -42,7 +55,6 @@
 <body>
 
 <div class="container">
-    <h1>A股实时监控面板</h1>
 
     <!-- 第一行：指数显示 -->
     <div class="indices-section">
@@ -78,6 +90,17 @@
 
     <div class="status-bar">
         最后更新: <span id="last-update-time">--</span>
+    </div>
+</div>
+
+<!-- AI 分析模态框 -->
+<div id="aiModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeAiModal()">&times;</span>
+        <div class="ai-header">AI 智能分析 - <span id="ai-stock-name"></span> (<span id="ai-stock-code"></span>)</div>
+        <div id="ai-result-content" class="ai-result">
+            <div class="ai-loading">正在分析中，请稍候...</div>
+        </div>
     </div>
 </div>
 
@@ -205,6 +228,7 @@
                     <td>${formatAmount(stockInfo.amount)}</td>
                     <td>
                         <button class="btn btn-detail" onclick="showDetail('${stockInfo.symbol}')">详情</button>
+                        <button class="btn btn-ai" onclick="analyzeStock('${stockInfo.symbol}')">AI分析</button>
                         <button class="btn btn-remove" onclick="removeStock('${stockInfo.symbol}')">移除</button>
                     </td>
                 `;
@@ -255,10 +279,62 @@
         }
     }
 
-    // 显示详情 (简单alert或跳转，可根据需求扩展)
+    // 显示详情 (跳转到详情页)
     function showDetail(code) {
-        alert(`查看 ${code} 的详细信息功能待实现 (可对接 /api/stock_detail)`);
-        // 实际项目中可以打开模态框或新页面
+        window.location.href = `stock_detail.html?code=${code}`;
+    }
+
+    // AI 分析功能
+    async function analyzeStock(code) {
+        const modal = document.getElementById('aiModal');
+        const resultContent = document.getElementById('ai-result-content');
+        const stockNameSpan = document.getElementById('ai-stock-name');
+        const stockCodeSpan = document.getElementById('ai-stock-code');
+        
+        // 获取股票名称
+        const stockInfo = marketDataMap.get(code);
+        const name = stockInfo ? stockInfo.name : code;
+        
+        stockNameSpan.innerText = name;
+        stockCodeSpan.innerText = code;
+        
+        modal.style.display = "block";
+        resultContent.innerHTML = '<div class="ai-loading">正在连接 AI 分析师...</div>';
+
+        try {
+            // 调用后端 AI 分析接口
+            // 注意：当前后端实现为 GET /api/ai_analysis?code=xxx
+            const response = await fetch(`/api/ai_analysis?code=${encodeURIComponent(code)}`);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            
+            if (data.status === 'success') {
+                // 格式化输出，简单处理换行
+                const analysisText = data.analysis || "暂无分析结果";
+                resultContent.innerText = analysisText;
+            } else {
+                resultContent.innerText = `分析失败: ${data.msg || '未知错误'}`;
+            }
+        } catch (error) {
+            console.error('AI Analysis Error:', error);
+            resultContent.innerText = `请求出错: ${error.message}`;
+        }
+    }
+
+    function closeAiModal() {
+        document.getElementById('aiModal').style.display = "none";
+    }
+
+    // 点击模态框外部关闭
+    window.onclick = function(event) {
+        const modal = document.getElementById('aiModal');
+        if (event.target == modal) {
+            modal.style.display = "none";
+        }
     }
 
     // 启动

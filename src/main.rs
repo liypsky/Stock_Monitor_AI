@@ -1057,98 +1057,105 @@ async fn get_stock_minute_data(
     Json(json!({"status": "error", "msg": "fetch failed"}))
 }
 
+// 新增：从东方财富获取K线数据
+async fn fetch_kline_data_from_em(code: &str, klt: &str, limit: usize) -> Option<Vec<KLineDataPoint>> {
+    let secid = if code.starts_with("sh") {
+        format!("1.{}", &code[2..])
+    } else if code.starts_with("sz") {
+        format!("0.{}", &code[2..])
+    } else if code.starts_with("bj") {
+        format!("0.{}", &code[2..])
+    } else {
+        format!("0.{}", code)
+    };
+
+    // 东方财富K线接口
+    let url = format!(
+        "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={}&fqt=1&beg=0&end=20500101&lmt={}",
+        secid, klt, limit
+    );
+
+    let client = reqwest::Client::builder()
+        .default_headers({
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert("User-Agent", reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
+            headers.insert("Referer", reqwest::header::HeaderValue::from_static("http://quote.eastmoney.com/"));
+            headers
+        })
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            if let Ok(text) = resp.text().await {
+                if let Ok(root) = serde_json::from_str::<Value>(&text) {
+                    if let Some(data) = root.get("data") {
+                        if let Some(klines) = data.get("klines") {
+                            if let Some(arr) = klines.as_array() {
+                                let mut result = Vec::new();
+                                for item in arr {
+                                    if let Some(s) = item.as_str() {
+                                        let parts: Vec<&str> = s.split(',').collect();
+                                        // f51:日期, f52:开盘, f53:收盘, f54:最高, f55:最低, f56:成交量, f57:成交额, f58:振幅, f59:涨跌幅, f60:涨跌额, f61:换手率
+                                        if parts.len() >= 7 {
+                                            let date = parts[0];
+                                            let open = parts[1].parse::<f64>().unwrap_or(0.0);
+                                            let close = parts[2].parse::<f64>().unwrap_or(0.0);
+                                            let high = parts[3].parse::<f64>().unwrap_or(0.0);
+                                            let low = parts[4].parse::<f64>().unwrap_or(0.0);
+                                            let volume = parts[5].parse::<f64>().unwrap_or(0.0);
+                                            let amount = parts[6].parse::<f64>().unwrap_or(0.0);
+
+                                            result.push(KLineDataPoint {
+                                                date: date.to_string(),
+                                                open,
+                                                high,
+                                                low,
+                                                close,
+                                                volume,
+                                                amount,
+                                            });
+                                        }
+                                    }
+                                }
+                                return if result.is_empty() { None } else { Some(result) };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => eprintln!("Fetch EM KLine Error: {}", e)
+    }
+    None
+}
+
 async fn get_stock_kline_data(
     Query(params): Query<HashMap<String, String>>,
     _state: State<AppState>,
 ) -> Json<Value> {
     if let Some(code) = params.get("code") {
         let normalized_code = normalize_stock_code(code);
-        let default_type = "101".to_string(); // 修复：创建持久化的默认值
-        let ktype = params.get("type").unwrap_or(&default_type); // 修复：引用持久化变量
-
-        // 转换代码格式
-        let secid = if normalized_code.starts_with("sh") {
-            format!("1.{}", &normalized_code[2..])
-        } else if normalized_code.starts_with("sz") {
-            format!("0.{}", &normalized_code[2..])
-        } else if normalized_code.starts_with("bj") {
-            format!("0.{}", &normalized_code[2..])
-        } else {
-            format!("0.{}", normalized_code)
+        let ktype = params.get("type").map(|s| s.as_str()).unwrap_or("kday");
+        
+        // 映射前端类型到东方财富 klt 参数及限制条数
+        // 101=日K, 102=周K, 103=月K
+        // 需求：默认显示90条数据
+        let (klt, limit) = match ktype {
+            "kweek" => ("102", 90),  // 周K取90周
+            "kmonth" => ("103", 90), // 月K取90月
+            _ => ("101", 90),       // 日K取90天
         };
 
-        // klt: 1(分), 5(5分), 15(15分), 30(30分), 60(60分), 101(日), 102(周), 103(月)
-        let klt = match ktype.as_str() {
-            "kday" => "101",
-            "kweek" => "102",
-            "kmonth" => "103",
-            _ => "101",
-        };
-
-        let url = format!(
-            "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&beg=0&end=20500101&ut=fa5fd1943c7b386f172d6893dbfba10b&klt={}&fqt=1",
-            secid, klt
-        );
-
-        let client = reqwest::Client::builder()
-            .default_headers({
-                let mut headers = reqwest::header::HeaderMap::new();
-                headers.insert("User-Agent", reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
-                headers.insert("Referer", reqwest::header::HeaderValue::from_static("http://quote.eastmoney.com/"));
-                headers
-            })
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                if let Ok(text) = resp.text().await {
-                    if let Ok(root) = serde_json::from_str::<Value>(&text) {
-                        if let Some(data) = root.get("data") {
-                            if let Some(klines) = data.get("klines") {
-                                if let Some(arr) = klines.as_array() {
-                                    let mut kline_data: Vec<KLineDataPoint> = Vec::new();
-                                    for item in arr {
-                                        if let Some(s) = item.as_str() {
-                                            let parts: Vec<&str> = s.split(',').collect();
-                                            // 格式: 日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率
-                                            // f51:日期, f52:开盘, f53:收盘, f54:最高, f55:最低, f56:成交量(手), f57:成交额(元)
-                                            if parts.len() >= 7 {
-                                                let date = parts[0];
-                                                let open = parts[1].parse::<f64>().unwrap_or(0.0);
-                                                let close = parts[2].parse::<f64>().unwrap_or(0.0);
-                                                let high = parts[3].parse::<f64>().unwrap_or(0.0);
-                                                let low = parts[4].parse::<f64>().unwrap_or(0.0);
-                                                let volume = parts[5].parse::<f64>().unwrap_or(0.0);
-                                                let amount = parts[6].parse::<f64>().unwrap_or(0.0);
-
-                                                kline_data.push(KLineDataPoint {
-                                                    date: date.to_string(),
-                                                    open,
-                                                    high,
-                                                    low,
-                                                    close,
-                                                    volume,
-                                                    amount,
-                                                });
-                                            }
-                                        }
-                                    }
-                                    return Json(json!({
-                                        "status": "success",
-                                        "data": kline_data
-                                    }));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => eprintln!("Fetch kline data error: {}", e)
+        if let Some(data) = fetch_kline_data_from_em(&normalized_code, klt, limit).await {
+            return Json(json!({
+                "status": "success",
+                "data": data
+            }));
         }
     }
-    Json(json!({"status": "error", "msg": "fetch failed"}))
+    Json(json!({"status": "error", "msg": "fetch failed or no data"}))
 }
 
 fn parse_sina_data(text: &str) -> Vec<StockInfo> {
