@@ -86,6 +86,69 @@
             color: #856404;
         }
 
+        /* 新增：AI分析结果左右分栏布局 */
+        .ai-layout {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+        }
+        
+        /* 左侧核心结论 */
+        .ai-conclusion {
+            flex: 0 0 120px;
+            text-align: center;
+            padding: 15px 10px;
+            border-radius: 8px;
+            background-color: #f8f9fa;
+            border: 1px solid #eee;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100px;
+        }
+        
+        .conclusion-title {
+            font-size: 14px;
+            color: #7f8c8d;
+            margin-bottom: 8px;
+            font-weight: normal;
+        }
+        
+        .conclusion-text {
+            font-size: 24px;
+            font-weight: 900;
+            line-height: 1.2;
+        }
+        
+        /* 结论颜色样式 */
+        .conclusion-bullish {
+            color: #e74c3c; /* 红色 - 看多 */
+            background-color: #fdf2f2;
+            border-color: #fadbd8;
+        }
+        
+        .conclusion-bearish {
+            color: #27ae60; /* 绿色 - 看空 */
+            background-color: #f2fdf5;
+            border-color: #d5f5e3;
+        }
+        
+        .conclusion-neutral {
+            color: #f39c12; /* 黄色/橙色 - 震荡/观察 */
+            background-color: #fef9e7;
+            border-color: #fdebd0;
+        }
+
+        /* 右侧详细分析 */
+        .ai-detail {
+            flex: 1;
+            line-height: 1.8;
+            color: #333;
+            font-size: 15px;
+            padding-top: 5px;
+        }
+
         /* 图表容器 */
         #chart-container { width: 100%; height: 500px; }
         
@@ -350,29 +413,41 @@
         else if (type === 'timing') title = '⏱️ 择时信号建议';
         else if (type === 'turning') title = '🔄 拐点检测报告';
 
-        // 根据情感决定颜色类
-        // bullish -> red (buy), bearish -> green (sell), neutral -> yellow/gray (watch)
-        let colorClass = 'flat'; // default
-        let icon = '⚪';
+        // 确定结论文本和样式类
+        let conclusionText = '观望';
+        let conclusionClass = 'conclusion-neutral';
+        let icon = '⚖️';
         
         if (sentiment === 'bullish') {
-            colorClass = 'up'; // Red in our CSS
+            conclusionText = '看多';
+            conclusionClass = 'conclusion-bullish';
             icon = '🔺';
         } else if (sentiment === 'bearish') {
-            colorClass = 'down'; // Green in our CSS
+            conclusionText = '看空';
+            conclusionClass = 'conclusion-bearish';
             icon = '🔻';
         } else {
-            colorClass = 'ai-highlight'; // Yellowish
-            icon = '⚖️';
+            conclusionText = '震荡';
+            conclusionClass = 'conclusion-neutral';
+            icon = '⚪';
         }
 
+        // 构建左右分栏 HTML
         container.innerHTML = `
-            <div style="font-weight:bold; margin-bottom:10px; color:#8e44ad;">${title}</div>
-            <div class="ai-result-content ${colorClass}" style="font-weight: 500;">
-                <span style="font-size:1.2em; margin-right:5px;">${icon}</span>
-                ${formattedText}
+            <div style="font-weight:bold; margin-bottom:15px; color:#8e44ad; border-bottom:1px solid #eee; padding-bottom:10px;">${title}</div>
+            <div class="ai-layout">
+                <!-- 左侧核心结论 -->
+                <div class="ai-conclusion ${conclusionClass}">
+                    <div class="conclusion-title">核心观点</div>
+                    <div class="conclusion-text">${icon}<br>${conclusionText}</div>
+                </div>
+                
+                <!-- 右侧详细分析 -->
+                <div class="ai-detail">
+                    ${formattedText}
+                </div>
             </div>
-            <div style="margin-top:10px; font-size:12px; color:#999; text-align:right;">
+            <div style="margin-top:15px; font-size:12px; color:#999; text-align:right; border-top:1px solid #eee; padding-top:10px;">
                 AI生成结果仅供参考，不构成投资建议
             </div>
         `;
