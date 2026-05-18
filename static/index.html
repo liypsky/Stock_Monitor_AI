@@ -3,2268 +3,268 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>大A监控中心</title>
-    <!-- 1. Lightweight Charts (回退至 v3.8.0 稳定版) -->
-    <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    
+    <title>A股实时监控</title>
     <style>
-        :root { 
-            --primary: #d81e06; 
-            --bg: #f5f5f5; 
-            --card: #fff; 
-            --up: #f43f3e; 
-            --down: #00b42a; 
-            --text-main: #333;
-            --text-sub: #666;
-            --border-color: #eee;
-            
-            /* 响应式字体基础变量 */
-            --font-size-base: clamp(14px, 1vw + 12px, 16px);
-            --font-size-sm: clamp(12px, 0.8vw + 10px, 14px);
-            --font-size-lg: clamp(16px, 1.2vw + 14px, 18px);
-            --font-size-xl: clamp(20px, 2vw + 16px, 24px);
-        }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f9; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #2c3e50; margin-bottom: 20px; }
+        
+        /* 指数区域样式 */
+        .indices-section { margin-bottom: 20px; padding: 15px; background-color: #eef2f7; border-radius: 6px; border-left: 5px solid #3498db; }
+        .indices-title { font-weight: bold; margin-bottom: 10px; color: #2980b9; }
+        .indices-list { display: flex; flex-wrap: wrap; gap: 15px; }
+        .index-item { background: white; padding: 8px 15px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 120px; text-align: center; }
+        .index-name { font-size: 0.9em; color: #7f8c8d; display: block; margin-bottom: 4px; }
+        .index-change { font-weight: bold; font-size: 1.1em; }
+        .up { color: #e74c3c; } /* 红色涨 */
+        .down { color: #27ae60; } /* 绿色跌 */
+        .flat { color: #7f8c8d; }
 
-        /* 全局重置与基础样式 */
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif; 
-            background: var(--bg); 
-            margin: 0; 
-            padding: 20px; 
-            color: var(--text-main); 
-            user-select: none; 
-            font-size: var(--font-size-base);
-            line-height: 1.5;
-            -webkit-font-smoothing: antialiased; /* macOS 字体平滑 */
-            -moz-osx-font-smoothing: grayscale;
-        }
+        /* 个股表格样式 */
+        .stocks-section { margin-top: 20px; }
+        .stocks-title { font-weight: bold; margin-bottom: 10px; color: #2980b9; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #f8f9fa; color: #2c3e50; font-weight: 600; }
+        tr:hover { background-color: #f1f1f1; }
+        
+        /* 操作按钮 */
+        .btn { padding: 5px 10px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; margin-right: 5px; transition: background 0.2s; }
+        .btn-remove { background-color: #e74c3c; color: white; }
+        .btn-remove:hover { background-color: #c0392b; }
+        .btn-detail { background-color: #3498db; color: white; }
+        .btn-detail:hover { background-color: #2980b9; }
 
-        .container { max-width: 1200px; margin: 0 auto; }
-        
-        .section-header { display: flex; justify-content: space-between; align-items: center; margin: 20px 0 10px 0; }
-        .section-title { font-size: var(--font-size-lg); font-weight: bold; border-left: 4px solid var(--primary); padding-left: 10px; }
-        
-        /* 指数看板优化 */
-        .index-board { display: flex; gap: 15px; margin-bottom: 20px; overflow-x: auto; padding-bottom: 5px; }
-        .index-card { flex: 1; min-width: 140px; background: var(--card); padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: center; transition: transform 0.2s; position: relative; }
-        .index-card:hover { transform: translateY(-2px); }
-        .index-name { font-size: var(--font-size-sm); color: var(--text-sub); margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .index-price { font-size: var(--font-size-xl); font-weight: bold; line-height: 1.2; }
-        .index-change { font-size: var(--font-size-sm); margin-top: 5px; }
-        
-        /* 控制区优化 */
-        .controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); flex-wrap: wrap; gap: 10px; }
-        .input-group { display: flex; gap: 10px; align-items: center; }
-        input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; width: 150px; font-size: var(--font-size-base); transition: border-color 0.2s; }
-        input:focus { border-color: var(--primary); outline: none; }
-        .btn { padding: 8px 16px; background: var(--primary); color: white; border: none; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; font-size: var(--font-size-base); }
-        .btn:hover { opacity: 0.9; }
-        .btn-secondary { background: #64748b; }
-        .btn-small { padding: 4px 8px; font-size: 12px; margin-right: 5px; background: #e2e8f0; color: #475569; }
-        .btn-ai-config { background: #8b5cf6; color: white; } /* 新增：AI配置按钮样式 */
-
-        /* 右键菜单 */
-        #context-menu {
-            display: none;
-            position: absolute;
-            z-index: 1000;
-            background: #fff;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            padding: 5px 0;
-            min-width: 120px;
-            font-size: var(--font-size-base);
-        }
-        #context-menu div {
-            padding: 8px 15px;
-            cursor: pointer;
-        }
-        #context-menu div:hover { background: #f5f5f5; color: var(--primary); }
-        #context-menu .divider { height: 1px; background: #eee; margin: 5px 0; padding: 0; }
-
-        /* AI 配置弹窗 */
-        #ai-config-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 102; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
-        .ai-config-content { background: #fff; width: 90%; max-width: 800px; padding: 25px; border-radius: 12px; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2); max-height: 90vh; overflow-y: auto; }
-        .ai-config-item { border: 1px solid #eee; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: #fafafa; }
-        .ai-config-item h4 { margin: 0 0 10px 0; font-size: 16px; color: #333; }
-        .ai-config-row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-        .ai-config-row label { width: 100px; font-size: 12px; color: #666; line-height: 32px; }
-        .ai-config-row input, .ai-config-row select { flex: 1; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-        
-        /* AI 分析弹窗 */
-        #ai-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 101; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
-        .ai-content { background: #fff; width: 90%; max-width: 600px; padding: 25px; border-radius: 12px; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
-
-        /* 详情弹窗优化 */
-        #detail-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 100; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
-        .detail-content { background: #fff; width: 90%; max-width: 900px; padding: 25px; border-radius: 12px; position: relative; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
-        .close-btn { position: absolute; top: 15px; right: 20px; font-size: 28px; cursor: pointer; color: #999; line-height: 1; transition: color 0.2s; }
-        .close-btn:hover { color: #333; }
-        
-        .chart-tabs { display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; flex-wrap: wrap; }
-        .chart-tab { padding: 6px 16px; cursor: pointer; border-radius: 4px; font-size: var(--font-size-sm); transition: all 0.2s; }
-        .chart-tab:hover { background: #f1f5f9; }
-        .chart-tab.active { background: var(--primary); color: white; }
-        
-        .chart-container { height: 400px; margin-top: 20px; display: flex; flex-direction: column; gap: 5px; }
-        .chart-wrapper { position: relative; width: 100%; height: 100%; overflow: hidden; }
-        #chart-container-day .chart-wrapper:first-child { height: 300px; }
-        #chart-container-day .chart-wrapper:last-child { height: 100px; }
-        #chart-container-k .chart-wrapper:first-child { height: 300px; }
-        #chart-container-k .chart-wrapper:last-child { height: 100px; }
-        
-        #chart-price-div, #chart-volume-div, #chart-k-price-div, #chart-k-volume-div {
-            width: 100%;
-            height: 100%;
-        }
-        
-        #index-input-area { display: none; margin-bottom: 15px; background:#fff; padding:15px; border-radius:8px; border: 1px solid #eee; }
-        .loading-text { color: #999; font-style: italic; }
-        
-        /* AI 分析弹窗 */
-        #ai-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 101; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
-        .ai-content { background: #fff; width: 90%; max-width: 600px; padding: 25px; border-radius: 12px; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
-
-        /* 详情页增强样式 */
-        .detail-header-info { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 15px; }
-        .dh-left h2 { margin: 0; font-size: var(--font-size-xl); font-weight: bold; }
-        .dh-left span { color: var(--text-sub); font-size: var(--font-size-sm); margin-top: 4px; display: block; }
-        .dh-right { text-align: right; }
-        .dh-price { font-size: clamp(24px, 3vw, 32px); font-weight: bold; line-height: 1; }
-        .dh-change { font-size: var(--font-size-lg); margin-top: 5px; }
-        
-        .detail-stats-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 15px; margin-bottom: 20px; background: #f9fafb; padding: 15px; border-radius: 8px; }
-        .stat-item { text-align: center; }
-        .stat-label { font-size: 12px; color: #888; margin-bottom: 4px; }
-        .stat-value { font-weight: 600; font-size: var(--font-size-base); }
-
-        .money-flow-container { margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px; }
-        .mf-title { font-size: var(--font-size-base); font-weight: bold; margin-bottom: 10px; }
-        .mf-bars { 
-            display: flex; 
-            flex-direction: row; 
-            gap: 15px; 
-            overflow-x: auto; 
-            padding-bottom: 5px; 
-            align-items: center;
-        }
-        .mf-row { 
-            display: flex; 
-            flex-direction: column; 
-            align-items: center;
-            min-width: 80px; 
-            flex: 1; 
-            font-size: 12px; 
-        }
-        .mf-label { 
-            color: #666; 
-            margin-bottom: 4px; 
-            white-space: nowrap;
-        }
-        .mf-bar-bg { 
-            width: 100%; 
-            height: 6px; 
-            background: #eee; 
-            border-radius: 3px; 
-            overflow: hidden; 
-            position: relative; 
-            margin: 2px 0; 
-        }
-        .mf-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
-        .mf-val { 
-            text-align: center; 
-            font-family: monospace; 
-            font-size: 12px;
-            margin-top: 2px;
-        }
-        .mf-center-line { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #ccc; z-index: 1; }
-        
-        /* K线图 Tooltip 样式 */
-        #k-tooltip {
-            display: none;
-            position: absolute;
-            z-index: 1000;
-            background: rgba(255, 255, 255, 0.95);
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            padding: 8px 12px;
-            font-size: 12px;
-            font-family: inherit;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-            pointer-events: none; 
-            white-space: nowrap;
-            line-height: 1.6;
-        }
-        .tooltip-row { display: flex; justify-content: space-between; gap: 15px; }
-        .tooltip-label { color: #666; margin-right: 5px; }
-        .tooltip-val { font-weight: bold; color: #333; }
-        .tooltip-date { border-bottom: 1px solid #eee; margin-bottom: 4px; padding-bottom: 2px; font-weight: bold; color: #333; }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: #fff; 
-            padding: 20px;    
-            border-radius: 8px; 
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1); 
-        }
-
-        /* 移动端适配微调 */
-        @media (max-width: 768px) {
-            body { padding: 10px; }
-            .controls { flex-direction: column; align-items: stretch; }
-            .input-group { flex-wrap: wrap; }
-            input { width: 100%; box-sizing: border-box; }
-            .detail-stats-grid { grid-template-columns: repeat(3, 1fr); }
-            .index-board { gap: 10px; }
-            .index-card { min-width: 120px; padding: 10px; }
-        }
+        /* 状态栏 */
+        .status-bar { margin-top: 20px; text-align: right; font-size: 0.8em; color: #95a5a6; }
     </style>
 </head>
 <body>
-    <div class="container">
 
-    <div class="container">
-        <!-- 指数看板 -->
-        <div class="section-header">
-            <div class="section-title">📊 大盘指数 </div>
-            <div style="display:flex; gap:10px;">
-                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="showAiConfig()">⚙️ AI 配置</button>
-                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="toggleIndexInput()">+ 添加指数</button>
-            </div>
-        </div>
-        
-        <div id="index-input-area">
-            <div class="input-group">
-                <input type="text" id="index-input" placeholder="指数代码 (如 sh000300)">
-                <button class="btn" onclick="addIndex()">确认添加</button>
-            </div>
-            <div style="font-size:12px; color:#999; margin-top:5px;">最多显示8个</div>
-        </div>
+<div class="container">
+    <h1>A股实时监控面板</h1>
 
-        <div id="index-board" class="index-board">
-            <div style="color:#999; padding:10px;">加载中...</div>
+    <!-- 第一行：指数显示 -->
+    <div class="indices-section">
+        <div class="indices-title">大盘指数</div>
+        <div id="indices-container" class="indices-list">
+            <!-- 指数数据将通过JS插入这里 -->
+            <span style="color: #999;">加载中...</span>
         </div>
+    </div>
 
-        <!-- 自选股列表 -->
-        <div class="section-header">
-            <div class="section-title">🚀 自选个股</div>
-        </div>
-        
-        <div class="controls">
-            <div style="font-size: 0.9em; color: #666;">提示：支持拖拽排序、右键菜单操作</div>
-            <div class="input-group">
-                <div style="display:flex; flex-direction:column; gap:2px;">
-                    <label style="font-size:10px; color:#666;">页面刷新(秒)</label>
-                    <input type="number" id="page-refresh-input" placeholder="如: 3" min="1" value="3" style="width: 60px;">
-                </div>
-                <div style="display:flex; flex-direction:column; gap:2px;">
-                    <label style="font-size:10px; color:#666;">数据获取(秒)</label>
-                    <input type="number" id="data-fetch-input" placeholder="如: 10" min="1" value="10" style="width: 60px;">
-                </div>
-                <button class="btn btn-secondary" onclick="updateConfig()">应用配置</button>
-                <input type="text" id="stock-input" placeholder="代码 (如 600519)" onkeypress="if(event.keyCode==13) addStock()">
-                <button class="btn" onclick="addStock()">添加监控</button>
-            </div>
-        </div>
-
+    <!-- 第二行：个股列表 -->
+    <div class="stocks-section">
+        <div class="stocks-title">自选个股</div>
         <table>
             <thead>
                 <tr>
-                    <th onclick="sortTable('symbol')">代码</th>
-                    <th onclick="sortTable('name')">名称</th>
-                    <th onclick="sortTable('price')">当前价</th>
-                    <th onclick="sortTable('change_percent')">涨跌幅 ⇅</th>
-                    <th onclick="sortTable('high')">最高</th>
-                    <th onclick="sortTable('low')">最低</th>
-                    <th onclick="sortTable('volume')">成交额 ⇅</th>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>最新价</th>
+                    <th>涨跌幅</th>
+                    <th>最高</th>
+                    <th>最低</th>
+                    <th>成交额(元)</th>
                     <th>操作</th>
                 </tr>
             </thead>
-            <tbody id="stock-table-body"></tbody>
+            <tbody id="stocks-table-body">
+                <!-- 个股数据将通过JS插入这里 -->
+                <tr><td colspan="8" style="text-align:center; color:#999;">加载中...</td></tr>
+            </tbody>
         </table>
     </div>
 
-    <!-- 右键菜单 -->
-    <div id="context-menu">
-        <div onclick="contextAction('top')">置顶</div>
-        <div onclick="contextAction('bottom')">置底</div>
-        <div class="divider"></div>
-        <div onclick="contextAction('delete')" style="color: red;">删除</div>
+    <div class="status-bar">
+        最后更新: <span id="last-update-time">--</span>
     </div>
+</div>
 
-    <!-- 详情弹窗 -->
-    <div id="detail-view">
-        <div class="detail-content">
-            <span class="close-btn" onclick="closeDetail()">&times;</span>
-            
-            <!-- 第一行：名称代码与现价 -->
-            <div class="detail-header-info">
-                <div class="dh-left">
-                    <h2 id="detail-name">--</h2>
-                    <span id="detail-symbol">--</span>
-                </div>
-                <div class="dh-right">
-                    <div id="detail-price" class="dh-price">--</div>
-                    <div id="detail-change" class="dh-change">--</div>
-                </div>
-            </div>
+<script>
+    // 配置
+    const CONFIG_URL = '/api/config';
+    const MARKET_DATA_URL = '/api/market';
+    const REMOVE_STOCK_URL = '/api/remove_stock';
+    
+    let configData = null;
+    let marketDataMap = new Map(); // 用于快速查找股票信息 key: symbol, value: stockInfo
 
-            <!-- 第二行：详细统计 -->
-            <div class="detail-stats-grid">
-                <div class="stat-item"><div class="stat-label">今开</div><div class="stat-value" id="stat-open">--</div></div>
-                <div class="stat-item"><div class="stat-label">昨收</div><div class="stat-value" id="stat-preclose">--</div></div>
-                <div class="stat-item"><div class="stat-label">最高</div><div class="stat-value" id="stat-high">--</div></div>
-                <div class="stat-item"><div class="stat-label">最低</div><div class="stat-value" id="stat-low">--</div></div>
-                <div class="stat-item"><div class="stat-label">涨停</div><div class="stat-value" id="stat-limitup">--</div></div>
-                <div class="stat-item"><div class="stat-label">跌停</div><div class="stat-value" id="stat-limitdown">--</div></div>
-            </div>
-
-            <div class="chart-tabs">
-                <div class="chart-tab active" onclick="switchChart('day')">分时</div>
-                <div class="chart-tab" onclick="switchChart('kday')">日K</div>
-                <div class="chart-tab" onclick="switchChart('kweek')">周K</div>
-                <div class="chart-tab" onclick="switchChart('kmonth')">月K</div>
-                <!-- 新增：重置缩放按钮，仅在K线图显示时有效 -->
-                <button id="btn-reset-zoom" class="btn btn-secondary btn-small" style="margin-left: auto; display: none;" onclick="resetKLineZoom()">重置缩放</button>
-            </div>
-            
-            <!-- 修改：分时图改为 Lightweight Charts 容器 -->
-            <div class="chart-container" id="chart-container-day" style="display: block;">
-                <div class="chart-wrapper">
-                    <div id="chart-price-div"></div>
-                </div>
-                <div class="chart-wrapper">
-                    <div id="chart-volume-div"></div>
-                </div>
-            </div>
-            
-            <!-- K线图改为 Lightweight Charts 容器 -->
-            <div class="chart-container" id="chart-container-k" style="display: none;">
-                <div class="chart-wrapper">
-                    <!-- 新增：K线图例容器，用于显示MA值 -->
-                    <div id="k-legend" style="position: absolute; left: 12px; top: 12px; z-index: 2; font-size: 12px; font-family: sans-serif; pointer-events: none;"></div>
-                    <!-- 新增：K线 Tooltip 容器 -->
-                    <div id="k-tooltip"></div>
-                    <div id="chart-k-price-div"></div>
-                </div>
-                <div class="chart-wrapper">
-                    <div id="chart-k-volume-div"></div>
-                </div>
-            </div>
-
-            <!-- 资金流向 -->
-            <div class="money-flow-container">
-                <div class="mf-title">资金流向</div>
-                <div class="mf-bars" id="mf-bars">
-                    <!-- 动态生成 -->
-                    <div style="text-align:center; color:#999; padding:10px;">加载中...</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- AI 配置弹窗 -->
-    <div id="ai-config-view">
-        <div class="ai-config-content">
-            <span class="close-btn" onclick="closeAiConfig()">&times;</span>
-            <h2 style="margin-top:0;">AI 服务配置</h2>
-            <div id="ai-config-list">
-                <!-- 动态生成配置项 -->
-                <div style="text-align:center; color:#999; padding:20px;">加载中...</div>
-            </div>
-            <div style="margin-top:20px; text-align:right;">
-                <button class="btn btn-secondary" onclick="addNewAiConfig()">+ 新增配置</button>
-                <button class="btn" onclick="saveAiConfigs()">保存所有配置</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- AI 分析弹窗 -->
-    <div id="ai-view">
-        <div class="ai-content">
-            <span class="close-btn" onclick="closeAi()">&times;</span>
-            <h2 id="ai-title" style="margin-top:0;">AI 智能分析</h2>
-            <div id="ai-body" style="line-height: 1.6; color: #444; min-height: 100px;">
-                正在分析...
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let allData = [];
-        let isDataInitialized = false; // 标记数据是否至少尝试加载过一次
-        let configIndices = [];
-        let configStocks = [];
-        let pageRefreshInterval = 3; // 前端页面刷新间隔
-        let dataFetchInterval = 10;  // 后端数据获取间隔 (仅用于显示和配置提交)
-        let sortCol = 'change_percent';
-        let sortAsc = false;
-        let isManualSort = true; // 新增：标记是否使用手动拖拽排序
+    // 初始化
+    async function init() {
+        await fetchConfig();
+        await fetchMarketData();
+        renderPage();
         
-        // 新增：Lightweight Charts 实例引用
-        let dayPriceChart = null;
-        let dayVolumeChart = null;
-        let kLinePriceChart = null;
-        let kLineVolumeChart = null;
-        
-        let currentDetailSymbol = '';
-        let contextMenuTargetCode = '';
-        let currentChartType = 'day';
-        // 新增：存储详情页的实时数据，供图表使用
-        let currentDetailData = null;
-        let refreshTimer = null; // 新增：定时器引用
-        // 新增：前端K线数据缓存 { "symbol_type": data }
-        let kLineCache = {}; 
-        // 修改：K线图默认显示数量，减少以聚焦近期走势
-        const KLINE_DEFAULT_VIEW_COUNT = 40; 
-        
-        // 新增：AI 配置本地缓存
-        let aiConfigs = [];
+        // 设置定时器刷新数据 (默认3秒，可从config获取)
+        const interval = (configData && configData.page_refresh_interval) ? configData.page_refresh_interval * 1000 : 3000;
+        setInterval(async () => {
+            await fetchMarketData();
+            renderPage();
+        }, interval);
+    }
 
-        // 新增：启动或重启定时器
-        function startRefreshTimer() {
-            if (refreshTimer) clearInterval(refreshTimer);
-            refreshTimer = setInterval(refreshDataOnly, pageRefreshInterval * 1000);
-            console.log(`Page refresh timer set to ${pageRefreshInterval}s`);
-        }
-
-        async function init() {
-            await refreshAll();
-            startRefreshTimer(); // 启动定时器
-            loadAiConfigs(); // 加载 AI 配置
-        }
-
-        async function refreshAll() {
-            await loadConfig();
-            await fetchData();
-            render();
-        }
-
-        async function refreshDataOnly() {
-            // 页面刷新时，我们重新获取数据并渲染
-            // 注意：如果后端数据获取间隔较长，这里获取的可能还是旧数据，但UI会强制重绘
-            await fetchData();
-            render();
-        }
-
-        async function loadConfig() {
-            try {
-                const res = await fetch('/api/config');
-                const config = await res.json();
-                configIndices = config.indices;
-                configStocks = config.stocks;
-                    
-                    if (config.page_refresh_interval) {
-                        pageRefreshInterval = config.page_refresh_interval;
-                        const input = document.getElementById('page-refresh-input');
-                        if (input) input.value = pageRefreshInterval;
-                    }
-                    
-                    if (config.data_fetch_interval) {
-                        dataFetchInterval = config.data_fetch_interval;
-                        const input = document.getElementById('data-fetch-input');
-                        if (input) input.value = dataFetchInterval;
-                    }
-                } catch (e) {
-                    console.error("Load config error:", e);
-                }
-            }
-
-            async function fetchData() {
-                try {
-                    const res = await fetch('/api/market');
-                    if (!res.ok) {
-                        throw new Error(`HTTP error! status: ${res.status}`);
-                    }
-                    allData = await res.json();
-                    isDataInitialized = true; // 标记已成功获取过数据（即使是空数组）
-                } catch (e) {
-                    console.error("Fetch data error:", e);
-                    isDataInitialized = true; // 即使出错也标记为已初始化，避免无限显示“加载中”
-                }
-            }
-
-            function render() {
-                renderIndices();
-                renderTable();
-            }
-
-            function renderIndices() {
-                const board = document.getElementById('index-board');
-                board.innerHTML = '';
-                const indicesData = configIndices.map(code => {
-                    const data = allData.find(d => d.symbol === code);
-                    return { code, data };
-                });
-                
-                if (indicesData.length === 0) {
-                    board.innerHTML = '<div style="color:#999; padding:10px;">暂无指数配置</div>';
-                    return;
-                }
-
-                indicesData.forEach(item => {
-                    const div = document.createElement('div');
-                    div.className = 'index-card';
-                    // 添加点击事件，查看指数详情
-                    div.style.cursor = 'pointer';
-                    div.onclick = () => {
-                        if (item.data) {
-                            showDetail(item.code, item.data.name);
-                        }
-                    };
-
-                    if (!item.data) {
-                        // 修复：区分“正在加载”和“已加载但无数据（无效代码）”的状态
-                        // 只有当全局数据尚未初始化时，才显示“加载中”
-                        const isLoading = !isDataInitialized;
-                        
-                        if (isLoading) {
-                            div.innerHTML = `
-                                <div class="index-name">${item.code}</div>
-                                <div class="index-price loading-text">--</div>
-                                <div class="index-change loading-text">加载中...</div>
-                            `;
-                        } else {
-                            // 数据已初始化但该指数无数据，视为无效指数，提供删除入口
-                            div.innerHTML = `
-                                <div class="index-name" style="color:red;">${item.code} (无效)</div>
-                                <div class="index-price loading-text">--</div>
-                                <div class="index-change loading-text" style="cursor:pointer; text-decoration:underline;" onclick="removeIndex('${item.code}')">点击删除</div>
-                            `;
-                        }
-                    } else {
-                        const idx = item.data;
-                        const colorClass = idx.change_percent >= 0 ? 'up' : 'down';
-                        const sign = idx.change_percent >= 0 ? '+' : '';
-                        div.innerHTML = `
-                            <div class="index-name">${idx.name}</div>
-                            <div class="index-price ${colorClass}">${idx.price.toFixed(2)}</div>
-                            <div class="index-change ${colorClass}">${sign}${idx.change_percent.toFixed(2)}%</div>
-                        `;
-                    }
-                    board.appendChild(div);
-                });
-            }
-
-        // 新增：删除指数的函数
-        async function removeIndex(code) {
-            if(!confirm(`确定删除指数 ${code} 吗？`)) return;
-            
-            // 从本地配置移除
-            configIndices = configIndices.filter(c => c !== code);
-            
-            // 同步到后端
-            try {
-                const res = await fetch('/api/remove_index', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ code: code })
-                });
-                const result = await res.json();
-                if (result.status !== 'success') {
-                    console.error("Failed to remove index from backend:", result.msg);
-                    // 如果后端删除失败，可以选择重新加载配置或提示用户
-                    await loadConfig(); 
-                }
-            } catch (e) {
-                console.error("Network error while removing index:", e);
-                // 出错时重新加载配置以保持一致性
-                await loadConfig();
-            }
-            
-            // 重新渲染界面
-            render();
-        }
-
-        function renderTable() {
-            const tbody = document.getElementById('stock-table-body');
-            tbody.innerHTML = '';
-            
-            let stocksData = configStocks.map(code => {
-                const data = allData.find(d => d.symbol === code);
-                return { code, data };
-            });
-
-            // 如果不是手动排序模式，则应用列排序
-            if (!isManualSort) {
-                // 排序逻辑
-                stocksData.sort((a, b) => {
-                    if (sortCol !== 'symbol' && sortCol !== 'name') {
-                        if (!a.data && !b.data) return 0;
-                        if (!a.data) return 1;
-                        if (!b.data) return -1;
-                    }
-                    let valA, valB;
-                    if (sortCol === 'symbol' || sortCol === 'name') {
-                        valA = a.code; valB = b.code;
-                        if (a.data) valA = a.data[sortCol];
-                        if (b.data) valB = b.data[sortCol];
-                    } else {
-                        valA = a.data ? a.data[sortCol] : -999999;
-                        valB = b.data ? b.data[sortCol] : -999999;
-                    }
-                    if (typeof valA === 'string') return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-                    return sortAsc ? (valA - valB) : (valB - valA);
-                });
-            }
-            // 如果是 isManualSort === true，则保持 configStocks 的原始顺序（即拖拽顺序）
-
-            if (stocksData.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:20px;">暂无自选股，请添加</td></tr>';
-                return;
-            }
-
-            stocksData.forEach(item => {
-                const tr = document.createElement('tr');
-                tr.dataset.code = item.code;
-                tr.draggable = true; // 启用拖拽
-                
-                // 拖拽事件
-                tr.addEventListener('dragstart', handleDragStart);
-                tr.addEventListener('dragover', handleDragOver);
-                tr.addEventListener('drop', handleDrop);
-                tr.addEventListener('dragend', handleDragEnd);
-                
-                // 右键菜单
-                tr.addEventListener('contextmenu', (e) => showContextMenu(e, item.code));
-
-                if (!item.data) {
-                    const isLoading = !isDataInitialized;
-                    const statusText = isLoading ? '加载中...' : '无数据';
-                    const statusClass = 'loading-text';
-                    const displayCode = item.code.length > 2 ? item.code.substring(2) : item.code;
-                    tr.innerHTML = `
-                        <td>${displayCode}</td>
-                        <td class="${statusClass}">${item.code}</td>
-                        <td class="${statusClass}">--</td>
-                        <td class="${statusClass}">--</td>
-                        <td class="${statusClass}">--</td>
-                        <td class="${statusClass}">--</td>
-                        <td class="${statusClass}">--</td>
-                        <td><span class="${statusText}">${statusText}</span></td>
-                    `;
-                } else {
-                    const s = item.data;
-                    const colorClass = s.change_percent >= 0 ? 'up' : 'down';
-                    const sign = s.change_percent >= 0 ? '+' : '';
-                    const displaySymbol = s.symbol.length > 2 ? s.symbol.substring(2) : s.symbol;
-                    
-                    // 新增：格式化成交额函数
-                    const formatAmount = (amt) => {
-                        if (!amt || amt === 0) return '--';
-                        if (amt >= 100000000) {
-                            return (amt / 100000000).toFixed(2) + '亿';
-                        } else if (amt >= 10000000) {
-                            return (amt / 10000000).toFixed(2) + '千万';
-                        } else if (amt >= 10000) {
-                            return (amt / 10000).toFixed(2) + '万';
-                        }
-                        return amt.toFixed(0);
-                    };
-
-                    tr.innerHTML = `
-                        <td>${displaySymbol}</td>
-                        <td>${s.name}</td>
-                        <td class="${colorClass}" style="font-weight:bold;">${s.price.toFixed(2)}</td>
-                        <td class="${colorClass}">${sign}${s.change_percent.toFixed(2)}%</td>
-                        <td>${s.high.toFixed(2)}</td>
-                        <td>${s.low.toFixed(2)}</td>
-                        <td>${formatAmount(s.amount)}</td>
-                        <td>
-                            <button class="btn btn-small" onclick="showDetail('${s.symbol}', '${s.name}')">详&nbsp;&nbsp;情</button>
-                            <button class="btn btn-small btn-ai" onclick="showAiAnalysis('${s.symbol}', '${s.name}')">AI 分析</button>
-                        </td>
-                    `;
-                }
-                tbody.appendChild(tr);
-            });
-        }
-
-        // --- 拖拽排序逻辑 ---
-        let dragSrcEl = null;
-
-        function handleDragStart(e) {
-            dragSrcEl = this;
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', this.dataset.code); // 传输代码而非HTML
-            this.classList.add('dragging');
-        }
-
-        function handleDragOver(e) {
-            if (e.preventDefault) e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-            this.classList.add('drag-over');
-            return false;
-        }
-
-        function handleDragEnd(e) {
-            this.classList.remove('dragging');
-            document.querySelectorAll('tr').forEach(col => col.classList.remove('drag-over'));
-            dragSrcEl = null;
-        }
-
-        async function handleDrop(e) {
-            if (e.stopPropagation) e.stopPropagation();
-            
-            const targetRow = this;
-            if (!dragSrcEl || dragSrcEl === targetRow) return;
-
-            const srcCode = dragSrcEl.dataset.code;
-            const targetCode = targetRow.dataset.code;
-
-            if (!srcCode || !targetCode) return;
-
-            // 1. 在内存数组中重新排序
-            const srcIndex = configStocks.indexOf(srcCode);
-            const targetIndex = configStocks.indexOf(targetCode);
-
-            if (srcIndex > -1 && targetIndex > -1) {
-                // 移除源元素
-                configStocks.splice(srcIndex, 1);
-                // 计算新的插入位置
-                // 如果源在目标之前，移除后目标索引减1
-                const newIndex = srcIndex < targetIndex ? targetIndex - 1 : targetIndex;
-                // 插入到新位置
-                configStocks.splice(newIndex, 0, srcCode);
-
-                // 2. 立即重绘表格以反映新顺序 (保持 isManualSort = true)
-                isManualSort = true; 
-                renderTable();
-
-                // 3. 保存到后端
-                try {
-                    await fetch('/api/reorder_stocks', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ stocks: configStocks })
-                    });
-                    console.log("Stock order saved");
-                } catch (err) {
-                    console.error("Failed to save stock order", err);
-                    // 可选：如果保存失败，重新加载配置以恢复
-                    // loadConfig().then(render);
-                }
-            }
-            
-            return false;
-        }
-
-        // --- 右键菜单逻辑 ---
-        function showContextMenu(e, code) {
-            e.preventDefault();
-            contextMenuTargetCode = code;
-            const menu = document.getElementById('context-menu');
-            menu.style.display = 'block';
-            menu.style.left = `${e.pageX}px`;
-            menu.style.top = `${e.pageY}px`;
-        }
-
-        async function contextAction(action) {
-            const code = contextMenuTargetCode;
-            if (!code) return;
-
-            if (action === 'top') {
-                configStocks = [code, ...configStocks.filter(c => c !== code)];
-                renderTable();
-                await fetch('/api/reorder_stocks', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ stocks: configStocks })
-                });
-            } else if (action === 'bottom') {
-                configStocks = [...configStocks.filter(c => c !== code), code];
-                renderTable();
-                await fetch('/api/reorder_stocks', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ stocks: configStocks })
-                });
-            } else if (action === 'delete') {
-                if (confirm(`确定删除 ${code} 吗？`)) {
-                    configStocks = configStocks.filter(c => c !== code);
-                    renderTable();
-                    await fetch('/api/remove_stock', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ code: code })
-                    });
-                }
-            }
-        }
-
-        function sortTable(col) {
-            if (col === sortCol) {
-                sortAsc = !sortAsc;
+    // 获取配置 (indices 和 stocks 列表)
+    async function fetchConfig() {
+        try {
+            const response = await fetch(CONFIG_URL);
+            if (response.ok) {
+                configData = await response.json();
+                console.log('Config loaded:', configData);
             } else {
-                sortCol = col;
-                sortAsc = true;
+                console.error('Failed to fetch config');
             }
-            isManualSort = false;
-            renderTable();
+        } catch (error) {
+            console.error('Error fetching config:', error);
         }
+    }
 
-        function toggleIndexInput() {
-            const area = document.getElementById('index-input-area');
-            area.style.display = area.style.display === 'block' ? 'none' : 'block';
-        }
-
-        function addIndex() {
-            const input = document.getElementById('index-input');
-            const code = input.value.trim();
-            if (code) {
-                if (configIndices.includes(code)) {
-                    alert("该指数已存在");
-                } else {
-                    configIndices.push(code);
-                    renderIndices();
-                    input.value = '';
-                    fetch('/api/add_index', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ code: code })
-                    }).then(() => {
-                        console.log("Index added");
-                    }).catch(() => {
-                        alert("网络错误");
-                    });
-                }
+    // 获取市场实时数据
+    async function fetchMarketData() {
+        try {
+            const response = await fetch(MARKET_DATA_URL);
+            if (response.ok) {
+                const data = await response.json();
+                marketDataMap.clear();
+                data.forEach(item => {
+                    marketDataMap.set(item.symbol, item);
+                });
+                document.getElementById('last-update-time').innerText = new Date().toLocaleTimeString();
             }
+        } catch (error) {
+            console.error('Error fetching market data:', error);
+        }
+    }
+
+    // 渲染页面
+    function renderPage() {
+        if (!configData) return;
+
+        renderIndices();
+        renderStocksTable();
+    }
+
+    // 渲染指数区域
+    function renderIndices() {
+        const container = document.getElementById('indices-container');
+        container.innerHTML = '';
+
+        if (!configData.indices || configData.indices.length === 0) {
+            container.innerHTML = '<span style="color: #999;">无监控指数</span>';
+            return;
         }
 
-        function updateConfig() {
-            const pageRefreshInput = document.getElementById('page-refresh-input');
-            const dataFetchInput = document.getElementById('data-fetch-input');
-            const pageRefresh = parseInt(pageRefreshInput.value);
-            const dataFetch = parseInt(dataFetchInput.value);
+        configData.indices.forEach(symbol => {
+            const stockInfo = marketDataMap.get(symbol);
+            const div = document.createElement('div');
+            div.className = 'index-item';
 
-            if (isNaN(pageRefresh) || isNaN(dataFetch) || pageRefresh < 1 || dataFetch < 1) {
-                alert("请输入有效的刷新间隔");
-                return;
-            }
-
-            fetch('/api/update_config', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ page_refresh_interval: pageRefresh, data_fetch_interval: dataFetch })
-            }).then(() => {
-                pageRefreshInterval = pageRefresh;
-                dataFetchInterval = dataFetch;
-                console.log("Config updated");
-            }).catch(() => {
-                alert("网络错误");
-            });
-        }
-
-        function addStock() {
-            const input = document.getElementById('stock-input');
-            const code = input.value.trim();
-            if (code) {
-                if (configStocks.includes(code)) {
-                    alert("该股票已存在");
-                } else {
-                    configStocks.push(code);
-                    renderTable();
-                    input.value = '';
-                    fetch('/api/add_stock', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ code: code })
-                    }).then(() => {
-                        console.log("Stock added");
-                    }).catch(() => {
-                        alert("网络错误");
-                    });
-                }
-            }
-        }
-
-        // --- AI 配置管理 ---
-        async function loadAiConfigs() {
-            try {
-                const res = await fetch('/api/ai_config');
-                const result = await res.json();
-                if (result.status === 'success' && result.data) {
-                    aiConfigs = result.data;
-                } else {
-                    aiConfigs = [];
-                }
-            } catch (e) {
-                console.error("Load AI config error:", e);
-                aiConfigs = [];
-            }
-        }
-
-        function showAiConfig() {
-            document.getElementById('ai-config-view').style.display = 'flex';
-            renderAiConfigs();
-        }
-
-        function closeAiConfig() {
-            document.getElementById('ai-config-view').style.display = 'none';
-        }
-
-        function renderAiConfigs() {
-            const container = document.getElementById('ai-config-list');
-            container.innerHTML = '';
-
-            if (aiConfigs.length === 0) {
-                container.innerHTML = '<div style="text-align:center; color:#999; padding:20px;">暂无配置，请点击“新增配置”</div>';
-                return;
-            }
-
-            aiConfigs.forEach((config, index) => {
-                const div = document.createElement('div');
-                div.className = 'ai-config-item';
+            if (stockInfo) {
+                const changeClass = stockInfo.change_percent > 0 ? 'up' : (stockInfo.change_percent < 0 ? 'down' : 'flat');
+                const changeSign = stockInfo.change_percent > 0 ? '+' : '';
+                
                 div.innerHTML = `
-                    <h4>
-                        <input type="text" value="${config.name || '未命名配置'}" onchange="updateAiConfigField(${index}, 'name', this.value)" style="width:200px; font-weight:bold; border:none; background:transparent; border-bottom:1px solid #ddd;">
-                        <button class="btn btn-small" style="float:right; background:#ef4444; color:white;" onclick="removeAiConfig(${index})">删除</button>
-                    </h4>
-                    <div class="ai-config-row">
-                        <label>类型</label>
-                        <select onchange="updateAiConfigField(${index}, 'type', this.value)">
-                            <option value="openai" ${config.type === 'openai' ? 'selected' : ''}>OpenAI Compatible</option>
-                            <option value="ollama" ${config.type === 'ollama' ? 'selected' : ''}>Ollama</option>
-                            <option value="gemini" ${config.type === 'gemini' ? 'selected' : ''}>Gemini</option>
-                        </select>
-                    </div>
-                    <div class="ai-config-row">
-                        <label>API URL</label>
-                        <input type="text" value="${config.apiUrl || ''}" onchange="updateAiConfigField(${index}, 'apiUrl', this.value)" placeholder="https://api.openai.com/v1">
-                    </div>
-                    <div class="ai-config-row">
-                        <label>API Key</label>
-                        <input type="password" value="${config.apiKey || ''}" onchange="updateAiConfigField(${index}, 'apiKey', this.value)" placeholder="sk-...">
-                    </div>
-                    <div class="ai-config-row">
-                        <label>主模型</label>
-                        <input type="text" value="${config.mainModels || config.model || ''}" onchange="updateAiConfigField(${index}, 'mainModels', this.value)" placeholder="gpt-3.5-turbo">
-                    </div>
-                    <div class="ai-config-row">
-                        <label>备选模型</label>
-                        <input type="text" value="${config.fallbackModels || ''}" onchange="updateAiConfigField(${index}, 'fallbackModels', this.value)" placeholder="gpt-4, claude-3">
-                    </div>
-                    <div class="ai-config-row">
-                        <label>超时(秒)</label>
-                        <input type="number" value="${config.timeoutSeconds || 60}" onchange="updateAiConfigField(${index}, 'timeoutSeconds', parseInt(this.value))" min="10">
-                    </div>
+                    <span class="index-name">${stockInfo.name}</span>
+                    <span class="index-change ${changeClass}">${changeSign}${stockInfo.change_percent.toFixed(2)}%</span>
                 `;
-                container.appendChild(div);
-            });
-        }
-
-        function updateAiConfigField(index, field, value) {
-            if (!aiConfigs[index]) return;
-            
-            // 兼容旧字段 model -> mainModels
-            if (field === 'mainModels') {
-                aiConfigs[index].mainModels = value;
-                aiConfigs[index].model = value; // 同步更新 model 以兼容后端旧逻辑
-            } else if (field === 'type') {
-                aiConfigs[index].type = value;
-                // 根据类型自动填充一些默认 URL
-                if (value === 'ollama' && !aiConfigs[index].apiUrl) {
-                    aiConfigs[index].apiUrl = 'http://localhost:11434/api/chat';
-                } else if (value === 'gemini' && !aiConfigs[index].apiUrl) {
-                    aiConfigs[index].apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
-                } else if (value === 'openai' && !aiConfigs[index].apiUrl) {
-                    aiConfigs[index].apiUrl = 'https://api.openai.com/v1';
-                }
             } else {
-                aiConfigs[index][field] = value;
+                div.innerHTML = `
+                    <span class="index-name">${symbol}</span>
+                    <span class="index-change flat">--</span>
+                `;
             }
-            // 重新渲染以反映变化（特别是 URL 自动填充时）
-            // 注意：直接修改 input value 不会触发 onchange，所以这里不需要完全重绘，除非是结构变化
-            // 为了简单，这里只更新内存，保存时再提交
+            container.appendChild(div);
+        });
+    }
+
+    // 渲染个股表格
+    function renderStocksTable() {
+        const tbody = document.getElementById('stocks-table-body');
+        tbody.innerHTML = '';
+
+        if (!configData.stocks || configData.stocks.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#999;">无监控股票</td></tr>';
+            return;
         }
 
-        function addNewAiConfig() {
-            aiConfigs.push({
-                id: 'new_' + Date.now(),
-                name: '新配置',
-                type: 'openai',
-                apiUrl: '',
-                apiKey: '',
-                mainModels: '',
-                fallbackModels: '',
-                model: '',
-                timeoutSeconds: 60
+        configData.stocks.forEach(symbol => {
+            const stockInfo = marketDataMap.get(symbol);
+            const tr = document.createElement('tr');
+
+            if (stockInfo) {
+                const changeClass = stockInfo.change_percent > 0 ? 'up' : (stockInfo.change_percent < 0 ? 'down' : 'flat');
+                const changeSign = stockInfo.change_percent > 0 ? '+' : '';
+
+                tr.innerHTML = `
+                    <td>${stockInfo.symbol}</td>
+                    <td>${stockInfo.name}</td>
+                    <td>${stockInfo.price.toFixed(2)}</td>
+                    <td class="${changeClass}">${changeSign}${stockInfo.change_percent.toFixed(2)}%</td>
+                    <td>${stockInfo.high.toFixed(2)}</td>
+                    <td>${stockInfo.low.toFixed(2)}</td>
+                    <td>${formatAmount(stockInfo.amount)}</td>
+                    <td>
+                        <button class="btn btn-detail" onclick="showDetail('${stockInfo.symbol}')">详情</button>
+                        <button class="btn btn-remove" onclick="removeStock('${stockInfo.symbol}')">移除</button>
+                    </td>
+                `;
+            } else {
+                // 如果还没有获取到该股票的数据，显示占位符
+                tr.innerHTML = `
+                    <td>${symbol}</td>
+                    <td colspan="6" style="color:#999;">等待数据...</td>
+                    <td>
+                        <button class="btn btn-remove" onclick="removeStock('${symbol}')">移除</button>
+                    </td>
+                `;
+            }
+            tbody.appendChild(tr);
+        });
+    }
+
+    // 格式化成交额
+    function formatAmount(amount) {
+        if (amount >= 100000000) {
+            return (amount / 100000000).toFixed(2) + '亿';
+        } else if (amount >= 10000) {
+            return (amount / 10000).toFixed(2) + '万';
+        }
+        return amount.toFixed(0);
+    }
+
+    // 移除股票
+    async function removeStock(code) {
+        if (!confirm(`确定要移除股票 ${code} 吗?`)) return;
+        
+        try {
+            const response = await fetch(REMOVE_STOCK_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code: code })
             });
-            renderAiConfigs();
-        }
-
-        function removeAiConfig(index) {
-            if (confirm('确定删除此配置吗？')) {
-                aiConfigs.splice(index, 1);
-                renderAiConfigs();
+            if (response.ok) {
+                // 重新获取配置以更新列表
+                await fetchConfig();
+                renderPage();
+            } else {
+                alert('移除失败');
             }
+        } catch (error) {
+            console.error('Error removing stock:', error);
+            alert('网络错误');
         }
+    }
 
-        async function saveAiConfigs() {
-            try {
-                const res = await fetch('/api/update_ai_config', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ ai_configs: aiConfigs })
-                });
-                const result = await res.json();
-                if (result.status === 'success') {
-                    alert('AI 配置已保存');
-                    closeAiConfig();
-                } else {
-                    alert('保存失败: ' + result.msg);
-                }
-            } catch (e) {
-                console.error("Save AI config error:", e);
-                alert('网络错误，保存失败');
-            }
-        }
+    // 显示详情 (简单alert或跳转，可根据需求扩展)
+    function showDetail(code) {
+        alert(`查看 ${code} 的详细信息功能待实现 (可对接 /api/stock_detail)`);
+        // 实际项目中可以打开模态框或新页面
+    }
 
-        init();
-    </script>
+    // 启动
+    init();
+
+</script>
+
 </body>
 </html>
-
-            if (action === 'delete') {
-                if(confirm(`确定删除 ${code} 吗？`)) {
-                    await fetch('/api/remove_stock', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ code: code })
-                    });
-                    // 本地移除
-                    configStocks = configStocks.filter(c => c !== code);
-                    render();
-                }
-            } else if (action === 'top' || action === 'bottom') {
-                const idx = configStocks.indexOf(code);
-                if (idx > -1) {
-                    configStocks.splice(idx, 1);
-                    if (action === 'top') configStocks.unshift(code);
-                    else configStocks.push(code);
-                    
-                    // 保存到后端
-                    await fetch('/api/reorder_stocks', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ stocks: configStocks })
-                    });
-                    render();
-                }
-            }
-            document.getElementById('context-menu').style.display = 'none';
-        }
-
-        // --- 其他功能 ---
-        function sortTable(col) {
-            isManualSort = false; // 点击列排序时，切换为非手动排序模式
-            if (sortCol === col) sortAsc = !sortAsc;
-            else { sortCol = col; sortAsc = false; }
-            renderTable();
-        }
-
-        function toggleIndexInput() {
-            const area = document.getElementById('index-input-area');
-            area.style.display = area.style.display === 'none' ? 'block' : 'none';
-        }
-
-        async function addStock() {
-            const input = document.getElementById('stock-input');
-            let code = input.value.trim();
-            if (!code) return;
-            
-            // 前端不再强制校验前缀，交给后端处理
-            console.log("Adding stock:", code);
-            const res = await fetch(`/api/add_stock?code=${code}`);
-            const result = await res.json();
-
-            if (result.status === "success") {
-                input.value = '';
-                const finalCode = result.code || code; // 使用后端返回的标准化代码
-                if (!configStocks.includes(finalCode)) {
-                    configStocks.push(finalCode);
-                }
-                // 修改：先获取最新数据，再渲染，避免显示“加载中”
-                await fetchData(); 
-                render();
-            } else if (result.status === "exists") {
-                alert("该股票已在列表中");
-                await fetchData();
-                render();
-            } else {
-                alert("添加失败: " + result.msg);
-            }
-        }
-
-        async function addIndex() {
-            const input = document.getElementById('index-input');
-            let code = input.value.trim().toLowerCase();
-            if (!code) return;
-            
-            const res = await fetch(`/api/add_index?code=${code}`);
-            const result = await res.json();
-
-            if (result.status === "success") {
-                input.value = '';
-                toggleIndexInput();
-                 if (!configIndices.includes(code)) {
-                    configIndices.push(code);
-                }
-                // 修改：先获取最新数据，再渲染，避免显示“加载中”
-                await fetchData();
-                render();
-            } else if (result.status === "full") {
-                alert("指数最多只能添加8个");
-            } else if (result.status === "exists") {
-                alert("该指数已在列表中");
-                await fetchData();
-                render();
-            } else {
-                alert("添加失败: " + result.msg);
-            }
-        }
-
-        // --- 详情与图表 ---
-        async function showDetail(symbol, name) {
-            currentDetailSymbol = symbol; // 修复：使用全局变量而非 AppState
-            document.getElementById('detail-view').style.display = 'flex';
-            document.getElementById('detail-name').innerText = name;
-            document.getElementById('detail-symbol').innerText = symbol;
-            
-            // 重置UI
-            resetDetailUI();
-            
-            // 加载真实数据
-            await loadDetailData();
-            
-            // 默认显示分时
-            switchChart('day');
-        }
-
-        function resetDetailUI() {
-            document.getElementById('detail-price').innerText = '--';
-            document.getElementById('detail-change').innerText = '--';
-            ['stat-open', 'stat-preclose', 'stat-high', 'stat-low', 'stat-limitup', 'stat-limitdown'].forEach(id => {
-                document.getElementById(id).innerText = '--';
-            });
-            document.getElementById('mf-bars').innerHTML = '<div style="text-align:center; color:#999; padding:10px;">加载中...</div>';
-        }
-
-        async function loadDetailData() {
-            if (!currentDetailSymbol) return; // 修复：使用全局变量
-            try {
-                // 1. 获取基本行情详情
-                const res = await fetch(`/api/stock_detail?code=${currentDetailSymbol}`);
-                const result = await res.json();
-                
-                if (result.status === 'success' && result.data) {
-                    const d = result.data;
-                    // 只有当新数据有效时才更新 currentDetailData，否则保留旧数据用于显示
-                    if (d.price > 0) {
-                        currentDetailData = d; 
-                    }
-
-                    const colorClass = d.change_percent >= 0 ? 'up' : 'down';
-                    const sign = d.change_percent >= 0 ? '+' : '';
-                    
-                    // 更新头部信息
-                    document.getElementById('detail-name').innerText = d.name || '--';
-                    document.getElementById('detail-symbol').innerText = d.symbol || '--';
-
-                    const priceEl = document.getElementById('detail-price');
-                    if (d.price > 0) {
-                        priceEl.innerText = d.price.toFixed(2);
-                        priceEl.className = `dh-price ${colorClass}`;
-                    }
-                    
-                    const changeEl = document.getElementById('detail-change');
-                    if (d.change_percent !== undefined) {
-                        changeEl.innerText = `${sign}${d.change_percent.toFixed(2)}%`;
-                        changeEl.className = `dh-change ${colorClass}`;
-                    }
-
-                    // 更新统计网格 - 无数据时保留原值或显示 --
-                    const updateStat = (id, val) => {
-                        const el = document.getElementById(id);
-                        if (val && val > 0) {
-                            el.innerText = val.toFixed(2);
-                            // 新增：根据涨跌设置颜色
-                            // 对于“涨停”和“跌停”，通常涨停价>昨收(红)，跌停价<昨收(绿)
-                            // 对于“最高”、“最低”、“今开”，通常对比昨收
-                            // 这里统一逻辑：如果值 > pre_close 则红， < pre_close 则绿，等于则无色
-                            
-                            let basePrice = d.pre_close;
-                            // 特殊处理：如果是涨停/跌停价，它们本身就是基于昨收计算的极限值
-                            // 但为了视觉统一，我们依然对比昨收
-                            
-                            if (basePrice > 0) {
-                                if (val > basePrice) {
-                                    el.className = 'stat-value up';
-                                } else if (val < basePrice) {
-                                    el.className = 'stat-value down';
-                                } else {
-                                    el.className = 'stat-value';
-                                }
-                            } else {
-                                el.className = 'stat-value';
-                            }
-
-                        } else if (!currentDetailData || currentChartType !== 'day') {
-                             // 如果没有历史数据且当前无值，显示 --
-                             el.innerText = '--';
-                             el.className = 'stat-value';
-                        }
-                        // 如果有历史数据(currentDetailData)，且新值为0，则保持原样不更新，或者根据需求显示 --
-                        // 这里选择：如果新数据为0，但旧数据有值，保持旧值（模拟“取上一个开盘日”的效果，实际是保持最后已知好值）
-                    };
-
-                    updateStat('stat-open', d.open);
-                    updateStat('stat-preclose', d.pre_close);
-                    updateStat('stat-high', d.high);
-                    updateStat('stat-low', d.low);
-                    updateStat('stat-limitup', d.limit_up);
-                    updateStat('stat-limitdown', d.limit_down);
-
-                } else {
-                    console.error("Failed to load detail data", result);
-                    // 即使详情失败，也尝试加载资金流向，或者显示错误
-                }
-
-                // 2. 获取资金流向 (异步执行，不阻塞分时图渲染，分时图在 switchChart 中单独触发)
-                // 注意：loadDetailData 被 showDetail 调用，showDetail 最后调用了 switchChart('day')
-                // switchChart 会触发 renderDayChart，renderDayChart 会 fetch minute data
-                // 所以资金流向的失败不应影响分时图，除非 JS 执行出错。
-                try {
-                    const mfRes = await fetch(`/api/stock_money_flow?code=${currentDetailSymbol}`);
-                    const mfResult = await mfRes.json();
-                    if (mfResult.status === 'success') {
-                        renderMoneyFlow(mfResult.data);
-                    } else {
-                        document.getElementById('mf-bars').innerHTML = '<div style="text-align:center; color:#999; padding:10px;">资金数据获取失败</div>';
-                    }
-                } catch (mfErr) {
-                    console.error("Load money flow error:", mfErr);
-                    document.getElementById('mf-bars').innerHTML = '<div style="text-align:center; color:#999; padding:10px;">资金数据网络错误</div>';
-                }
-
-            } catch (e) {
-                console.error("Load detail error:", e);
-            }
-        }
-
-        function renderMoneyFlow(data) {
-            const container = document.getElementById('mf-bars');
-            container.innerHTML = '';
-            
-            // 处理错误状态
-            if (!data) {
-                container.innerHTML = '<div style="text-align:center; color:#999; padding:10px;">暂无资金数据</div>';
-                return;
-            }
-
-            // 如果后端返回的是错误对象（包含 msg 字段）
-            if (data.msg) {
-                 // 修改：区分“无数据”和“获取失败”
-                 if (data.msg.includes("暂无") || data.msg.includes("null")) {
-                     container.innerHTML = '<div style="text-align:center; color:#999; padding:10px;">今日暂无资金流向数据</div>';
-                 } else {
-                     container.innerHTML = `<div style="text-align:center; color:#999; padding:10px;">${data.msg}</div>`;
-                 }
-                 return;
-            }
-
-            const items = [
-                { key: 'main_net', label: '主力' },
-                { key: 'super_large', label: '超大' },
-                { key: 'large', label: '大单' },
-                { key: 'medium', label: '中单' },
-                { key: 'small', label: '小单' },
-                { key: 'retail', label: '散户' }
-            ];
-
-            // 找出最大值用于计算比例
-            const maxVal = Math.max(...items.map(i => Math.abs(data[i.key] || 0)));
-            
-            const effectiveMax = maxVal === 0 ? 1 : maxVal; 
-
-            // 检查是否所有数据都为0
-            const allZero = items.every(item => (data[item.key] || 0) === 0);
-
-            // 如果全为0，可能是停牌或无数据，给出提示
-            if (allZero) {
-                 // 这里不直接返回，而是显示灰色条，因为确实可能资金流动为0
-                 // 但为了用户体验，可以在底部加一行小字提示
-            }
-
-            items.forEach(item => {
-                const val = data[item.key] || 0;
-                const percent = (Math.abs(val) / effectiveMax) * 100;
-                const isPositive = val >= 0;
-                const color = isPositive ? '#f43f3e' : '#00b42a'; // 红进绿出
-                const sign = isPositive ? '+' : '';
-                
-                let formattedVal = '';
-                if (Math.abs(val) > 100000000) formattedVal = `${sign}${(val/100000000).toFixed(2)}亿`;
-                else if (Math.abs(val) > 10000) formattedVal = `${sign}${(val/10000).toFixed(2)}万`;
-                else formattedVal = `${sign}${val.toFixed(0)}`;
-
-                const row = document.createElement('div');
-                row.className = 'mf-row';
-                
-                const barColor = allZero ? '#ccc' : color;
-                const displayPercent = allZero ? 0 : percent;
-
-                row.innerHTML = `
-                    <div class="mf-label">${item.label}</div>
-                    <div class="mf-bar-bg">
-                        <div class="mf-center-line"></div>
-                        <div class="mf-bar-fill" style="width: ${displayPercent}%; background: ${barColor}; margin-left: ${isPositive ? '50%' : (50-displayPercent)+'%'}"></div>
-                    </div>
-                    <div class="mf-val" style="color: ${allZero ? '#999' : color}">${formattedVal}</div>
-                `;
-                container.appendChild(row);
-            });
-            
-            // 如果全为0，添加提示
-            if (allZero) {
-                const tip = document.createElement('div');
-                tip.style.cssText = "width:100%; text-align:center; color:#999; font-size:12px; margin-top:5px;";
-                tip.innerText = "今日资金流向数据暂未更新、为0或该股停牌";
-                container.appendChild(tip);
-            }
-        }
-
-        function closeDetail() {
-            document.getElementById('detail-view').style.display = 'none';
-            currentDetailSymbol = ''; // 修复：使用全局变量
-            // 可选：销毁图表以释放内存，或者保留以便快速再次打开
-            // destroyCharts(); 
-        }
-
-        function updateChartTabs(type) {
-            document.querySelectorAll('.chart-tab').forEach(tab => tab.classList.remove('active'));
-            // 简单匹配：根据onclick内容查找，或者更好的方式是给tab加id
-            const tabs = document.querySelectorAll('.chart-tab');
-            if(type === 'day') tabs[0].classList.add('active');
-            if(type === 'kday') tabs[1].classList.add('active');
-            if(type === 'kweek') tabs[2].classList.add('active');
-            if(type === 'kmonth') tabs[3].classList.add('active');
-        }
-
-        function switchChart(type) {
-            currentChartType = type; // 修复：使用全局变量
-            updateChartTabs(type);
-            
-            // 切换容器显示
-            const dayContainer = document.getElementById('chart-container-day');
-            const kContainer = document.getElementById('chart-container-k');
-            const resetBtn = document.getElementById('btn-reset-zoom');
-            
-            if (type === 'day') {
-                dayContainer.style.display = 'block';
-                kContainer.style.display = 'none';
-                if (resetBtn) resetBtn.style.display = 'none';
-                
-                // 修改：使用 requestAnimationFrame 确保 DOM 渲染完成后获取尺寸
-                requestAnimationFrame(() => {
-                    requestAnimationFrame(() => {
-                        renderChart(type);
-                    });
-                });
-            } else {
-                dayContainer.style.display = 'none';
-                kContainer.style.display = 'block';
-                if (resetBtn) resetBtn.style.display = 'block';
-                
-                // 修改：使用 requestAnimationFrame 确保 DOM 渲染完成后获取尺寸
-                requestAnimationFrame(() => {
-                    requestAnimationFrame(() => {
-                        renderChart(type);
-                    });
-                });
-            }
-        }
-
-        // 新增：重置K线图缩放 (Lightweight Charts 自带重置功能，此处可留空或实现自定义逻辑)
-        function resetKLineZoom() {
-            if (kLinePriceChart) {
-                kLinePriceChart.timeScale().fitContent();
-            }
-            if (kLineVolumeChart) {
-                kLineVolumeChart.timeScale().fitContent();
-            }
-        }
-
-        async function renderChart(type) {
-            if (type === 'day') {
-                await renderDayChart();
-            } else {
-                await renderKChart(type);
-            }
-        }
-
-        async function renderDayChart() {
-            const priceContainer = document.getElementById('chart-price-div');
-            const volumeContainer = document.getElementById('chart-volume-div');
-            
-            if (!priceContainer || !volumeContainer) {
-                console.error("Chart containers not found");
-                return;
-            }
-
-            // 销毁旧实例
-            if (dayPriceChart) {
-                dayPriceChart.remove();
-                dayPriceChart = null;
-            }
-            if (dayVolumeChart) {
-                dayVolumeChart.remove();
-                dayVolumeChart = null;
-            }
-
-            // 清空容器内容
-            priceContainer.innerHTML = '';
-            volumeContainer.innerHTML = '';
-
-            // 强制触发重排以获取最新尺寸
-            void priceContainer.offsetHeight;
-            void volumeContainer.offsetHeight;
-
-            const pWidth = priceContainer.clientWidth;
-            const pHeight = priceContainer.clientHeight;
-            const vWidth = volumeContainer.clientWidth;
-            const vHeight = volumeContainer.clientHeight;
-
-            console.log(`[DayChart] Container size check: Price(${pWidth}x${pHeight}), Volume(${vWidth}x${vHeight})`);
-
-            // 优化：如果尺寸为0，使用更稳健的等待逻辑
-            if (pWidth === 0 || pHeight === 0 || vWidth === 0 || vHeight === 0) {
-                console.warn(`[DayChart] Container size is 0, attempting to wait for layout...`);
-
-                let retryCount = 0;
-                const maxRetries = 20; // 增加重试次数到2秒
-                const retryInterval = 100; 
-
-                const checkSize = () => {
-                    const currentPWidth = priceContainer.clientWidth;
-                    const currentPHeight = priceContainer.clientHeight;
-                    const currentVWidth = volumeContainer.clientWidth;
-                    const currentVHeight = volumeContainer.clientHeight;
-
-                    if (currentPWidth > 0 && currentPHeight > 0 && currentVWidth > 0 && currentVHeight > 0) {
-                        console.log("[DayChart] Size valid now, re-rendering...");
-                        renderDayChart(); // 递归调用重新渲染
-                    } else if (retryCount < maxRetries) {
-                        retryCount++;
-                        console.log(`[DayChart] Waiting for size... Attempt ${retryCount}/${maxRetries}`);
-                        setTimeout(checkSize, retryInterval);
-                    } else {
-                        console.error("[DayChart] Failed to get valid container size after retries.");
-                        priceContainer.innerText = "图表加载失败：容器尺寸始终为0，请尝试刷新页面或调整窗口大小。";
-                        volumeContainer.innerText = "图表加载失败：容器尺寸始终为0。";
-                    }
-                };
-                
-                // 启动检查
-                setTimeout(checkSize, retryInterval);
-                return;
-            }
-
-            try {
-                // 修改：获取2天的分时数据 (480分钟)，以便默认显示两天对比
-                const res = await fetch(`/api/stock_minute_data?code=${currentDetailSymbol}&datalen=480`);
-                const result = await res.json();
-                
-                console.log("Minute Data Result for", currentDetailSymbol, ":", result);
-
-                let lineData = [];
-                let volumeData = [];
-                let baselineData = []; 
-
-                // 数据校验与转换
-                if (result.status === 'success' && result.data && Array.isArray(result.data) && result.data.length > 0) {
-                    let preClose = 0;
-                    if (currentDetailData && currentDetailData.pre_close > 0) {
-                        preClose = currentDetailData.pre_close;
-                    } else {
-                        preClose = result.data[0].open || result.data[0].price || 0;
-                    }
-
-                    // 用于调试
-                    let debugLogged = false;
-                    
-                    // 新增：用于跟踪最后生成的时间戳，防止重复
-                    let lastTimestamp = 0;
-
-                    result.data.forEach((item, index) => {
-                        if (!item.time) return;
-
-                        let closePrice = item.close;
-                        if (!closePrice || closePrice <= 0) closePrice = item.price;
-                        if (!closePrice || closePrice <= 0) closePrice = item.open;
-
-                        if (!closePrice || closePrice <= 0) return;
-
-                        // 修复：将时间字符串转换为 Unix 时间戳 (秒)
-                        // 期望后端返回格式: "YYYY-MM-DD HH:mm" 或 "YYYY-MM-DD HH:mm:ss"
-                        let timeStr = item.time.trim();
-                        let timestamp = 0;
-
-                        // 尝试解析时间
-                        // 替换可能的分隔符，统一为 - 和 :
-                        // 注意：new Date() 在部分浏览器对 "YYYY-MM-DD HH:mm" 支持良好，但为了稳妥，我们手动解析或替换 T
-                        
-                        // 简单替换空格为 T 以符合 ISO 8601 建议格式，或者直接由 Date 解析
-                        // Date.parse 对 "YYYY-MM-DD HH:mm:ss" 支持较好
-                        const dateObj = new Date(timeStr.replace(/-/g, '/')); // 兼容 iOS/Safari: YYYY/MM/DD HH:mm
-                        
-                        if (!isNaN(dateObj.getTime())) {
-                            timestamp = Math.floor(dateObj.getTime() / 1000);
-                        } else {
-                            // 新增：如果后端返回的时间格式无法解析，则跳过该点，避免错误映射
-                            if (!debugLogged) {
-                                console.error("Failed to parse time string from backend:", timeStr, ". Please check backend format.");
-                                debugLogged = true;
-                            }
-                            return; 
-                        }
-
-                        // 防止重复时间点
-                        if (timestamp <= lastTimestamp) {
-                            // 如果时间相同或倒退，跳过（可能是数据源问题或重复推送）
-                            // 除非是同一分钟的最后一笔？分时图通常每分钟一个点
-                            // 这里严格一点，跳过重复
-                            return;
-                        }
-                        lastTimestamp = timestamp;
-
-                        let vol = item.volume || 0;
-                        if (vol < 0) vol = 0;
-
-                        // Lightweight Charts v3 推荐使用 Unix Timestamp (number)
-                        lineData.push({ time: timestamp, value: closePrice });
-                        baselineData.push({ time: timestamp, value: closePrice });
-
-                        const isUp = preClose > 0 ? (closePrice >= preClose) : true; 
-                        
-                        volumeData.push({
-                            time: timestamp,
-                            value: vol,
-                            color: isUp ? '#f43f3e' : '#00b42a'
-                        });
-                    });
-                    
-                    if (lineData.length === 0 && result.data.length > 0) {
-                        console.error("All minute data points were skipped.");
-                    }
-                } else {
-                    console.warn("No valid minute data received.");
-                }
-
-                // 获取昨收价用于 BaselineSeries
-                let preClose = 0;
-                if (currentDetailData && currentDetailData.pre_close > 0) {
-                    preClose = currentDetailData.pre_close;
-                } else if (lineData.length > 0) {
-                    preClose = lineData[0].value; 
-                } else {
-                    preClose = currentDetailData ? currentDetailData.price : 0;
-                }
-
-                // 创建分时价格图 (上方图，隐藏时间轴)
-                dayPriceChart = LightweightCharts.createChart(priceContainer, {
-                    width: pWidth,
-                    height: pHeight,
-                    layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
-                    grid: { vertLines: { color: '#f0f0f0' }, horzLines: { color: '#f0f0f0' } },
-                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                    rightPriceScale: { borderColor: '#cccccc', autoScale: true },
-                    // 修改：隐藏上方价格图的时间轴，使其只显示在下方成交量图中
-                    timeScale: { 
-                        visible: false,
-                        borderColor: '#cccccc',
-                        timeVisible: true,
-                        secondsVisible: false,
-                        fixLeftEdge: false,
-                        fixRightEdge: false,
-                        tickMarkFormatter: (time, tickMarkType, locale) => {
-                            const date = new Date(time * 1000);
-                            const hours = date.getHours().toString().padStart(2, '0');
-                            const minutes = date.getMinutes().toString().padStart(2, '0');
-                            return `${hours}:${minutes}`;
-                        },
-                        rightOffset: 0,
-                        minBarSpacing: 0.5,
-                    },
-                });
-
-                // 使用 BaselineSeries 实现同花顺双色效果
-                let mainSeries = null;
-                if (typeof LightweightCharts.BaselineSeries !== 'undefined') {
-                    const baselineSeries = dayPriceChart.addBaselineSeries({
-                        baseValue: { type: 'price', price: preClose },
-                        topLineColor: '#f43f3e',
-                        topFillColor1: 'rgba(244, 63, 62, 0.2)',
-                        topFillColor2: 'rgba(244, 63, 62, 0.0)',
-                        bottomLineColor: '#00b42a',
-                        bottomFillColor1: 'rgba(0, 180, 42, 0.2)',
-                        bottomFillColor2: 'rgba(0, 180, 42, 0.0)',
-                        lineWidth: 2,
-                        lastValueVisible: true,
-                    });
-                    baselineSeries.setData(baselineData);
-                    mainSeries = baselineSeries;
-                } else {
-                    // 降级方案：单色 AreaSeries
-                    const lastPrice = lineData.length > 0 ? lineData[lineData.length - 1].value : preClose;
-                    const isOverallUp = lastPrice >= preClose;
-                    const mainColor = isOverallUp ? '#f43f3e' : '#00b42a';
-                    const topColor = isOverallUp ? 'rgba(244, 63, 62, 0.2)' : 'rgba(0, 180, 42, 0.2)';
-                    const bottomColor = 'rgba(255, 255, 255, 0)';
-
-                    const areaSeries = dayPriceChart.addAreaSeries({
-                        topColor: topColor,
-                        bottomColor: bottomColor,
-                        lineColor: mainColor,
-                        lineWidth: 2,
-                        priceLineVisible: false,
-                        lastValueVisible: true,
-                    });
-                    areaSeries.setData(lineData);
-                    mainSeries = areaSeries;
-                }
-
-                // 新增：添加昨收价黄色横线
-                if (mainSeries && preClose > 0) {
-                    mainSeries.createPriceLine({
-                        price: preClose,
-                        color: '#facc15', // 黄色
-                        lineWidth: 1,
-                        lineStyle: LightweightCharts.LineStyle.Dashed, // 虚线风格，区分于走势
-                        axisLabelVisible: true,
-                        title: '昨收',
-                    });
-                }
-
-                // 创建分时成交量图 (下方图，显示时间轴)
-                dayVolumeChart = LightweightCharts.createChart(volumeContainer, {
-                    width: vWidth,
-                    height: vHeight,
-                    layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
-                    grid: { vertLines: { visible: false }, horzLines: { visible: false } },
-                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                    // 确保右侧Y轴标签不显示，保持界面整洁并与上方对齐
-                    rightPriceScale: { visible: false },
-                    timeScale: { 
-                        borderColor: '#cccccc',
-                        visible: true,
-                        timeVisible: true,
-                        secondsVisible: false,
-                        tickMarkFormatter: (time, tickMarkType, locale) => {
-                            const date = new Date(time * 1000);
-                            const hours = date.getHours().toString().padStart(2, '0');
-                            const minutes = date.getMinutes().toString().padStart(2, '0');
-                            return `${hours}:${minutes}`;
-                        },
-                        rightOffset: 0,
-                        minBarSpacing: 0.5,
-                    },
-                });
-
-                const volumeSeries = dayVolumeChart.addHistogramSeries({
-                    color: '#26a69a',
-                    priceFormat: { type: 'volume' },
-                    priceScaleId: '',
-                });
-                volumeSeries.priceScale().applyOptions({
-                    scaleMargins: { top: 0.8, bottom: 0 },
-                });
-                volumeSeries.setData(volumeData);
-
-                // 同步时间轴
-                dayPriceChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-                    if (range) {
-                        dayVolumeChart.timeScale().setVisibleLogicalRange(range);
-                    }
-                });
-
-                dayVolumeChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-                    if (range) {
-                        dayPriceChart.timeScale().setVisibleLogicalRange(range);
-                    }
-                });
-
-                // 修改：默认显示最近2天的数据
-                // 使用 fitContent() 自动适配所有加载的数据（即后端返回的2天数据）
-                // 这样可以确保前一天和当天的数据都能完整展示，且比例正确
-                if (lineData.length > 0) {
-                    dayPriceChart.timeScale().fitContent();
-                } else {
-                    // 如果没有数据，则适应内容
-                    dayPriceChart.timeScale().fitContent();
-                }
-                
-            } catch (error) {
-                console.error("Error rendering day chart:", error);
-            }
-        }
-
-        // --- K线图模块 (Lightweight Charts 版) ---
-        async function renderKChart(type) {
-            const priceContainer = document.getElementById('chart-k-price-div');
-            const volumeContainer = document.getElementById('chart-k-volume-div');
-            const legendContainer = document.getElementById('k-legend'); // 新增：获取图例容器
-            const tooltipElement = document.getElementById('k-tooltip'); // 新增：获取 Tooltip 元素
-
-            if (!priceContainer || !volumeContainer) {
-                console.error("[KChart] Containers not found");
-                return;
-            }
-
-            // 销毁旧实例
-            if (kLinePriceChart) {
-                kLinePriceChart.remove();
-                kLinePriceChart = null;
-            }
-            if (kLineVolumeChart) {
-                kLineVolumeChart.remove();
-                kLineVolumeChart = null;
-            }
-
-            priceContainer.innerHTML = '';
-            volumeContainer.innerHTML = '';
-            if (legendContainer) legendContainer.innerHTML = ''; // 新增：清空旧图例
-            
-            // 修复：确保 Tooltip 在重新渲染时被隐藏，并检查元素是否存在
-            if (tooltipElement) {
-                tooltipElement.style.display = 'none';
-            } else {
-                console.warn("[KChart] Tooltip element #k-tooltip not found in DOM");
-            }
-
-            const symbol = currentDetailSymbol;
-            const cacheKey = `${symbol}_${type}`;
-            let kData = kLineCache[cacheKey];
-
-            if (!kData) {
-                try {
-                    const res = await fetch(`/api/stock_kline_data?code=${symbol}&type=${type}`);
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    const result = await res.json();
-                    
-                    if (result.status === 'success' && result.data) {
-                        kData = result.data;
-                        kLineCache[cacheKey] = kData;
-                    } else {
-                        throw new Error("No data in response");
-                    }
-                } catch (e) {
-                    console.error("[KChart] Fetch K-line error:", e);
-                    priceContainer.innerText = "暂无K线数据";
-                    return;
-                }
-            }
-
-            if (!kData || kData.length === 0) {
-                priceContainer.innerText = "暂无数据";
-                return;
-            }
-
-            try {
-                // 强制重排
-                void priceContainer.offsetHeight;
-                void volumeContainer.offsetHeight;
-
-                // 获取容器实际尺寸
-                let width = priceContainer.clientWidth;
-                let height = priceContainer.clientHeight;
-                let volWidth = volumeContainer.clientWidth;
-                let volHeight = volumeContainer.clientHeight;
-
-                // 修复：如果尺寸为0，尝试延迟后再次获取，避免使用复杂的 ResizeObserver 导致的不稳定
-                if (width === 0 || height === 0 || volWidth === 0 || volHeight === 0) {
-                    console.warn("[KChart] Container size is 0, waiting for layout...");
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                    
-                    // 再次检查
-                    width = priceContainer.clientWidth;
-                    height = priceContainer.clientHeight;
-                    volWidth = volumeContainer.clientWidth;
-                    volHeight = volumeContainer.clientHeight;
-
-                    if (width === 0 || height === 0 || volWidth === 0 || volHeight === 0) {
-                        console.error("[KChart] Container size still 0 after wait. Aborting render.");
-                        priceContainer.innerText = "图表容器尺寸异常，请尝试刷新页面";
-                        return;
-                    }
-                }
-
-                const candleData = [];
-                const volumeData = [];
-
-                for (let i = 0; i < kData.length; i++) {
-                    const d = kData[i];
-                    // Lightweight Charts 需要 'YYYY-MM-DD' 格式的时间字符串
-                    const timeStr = d.date; 
-                    
-                    const open = Number(d.open);
-                    const high = Number(d.high);
-                    const low = Number(d.low);
-                    const close = Number(d.close);
-                    const volume = Number(d.volume);
-
-                    if (isNaN(open) || isNaN(high) || isNaN(low) || isNaN(close)) continue;
-
-                    candleData.push({
-                        time: timeStr,
-                        open: open,
-                        high: high,
-                        low: low,
-                        close: close
-                    });
-
-                    volumeData.push({
-                        time: timeStr,
-                        value: volume,
-                        color: close >= open ? '#f43f3e' : '#00b42a'
-                    });
-                }
-
-                if (candleData.length === 0) {
-                    throw new Error("Invalid data format");
-                }
-
-                // 创建K线主图
-                kLinePriceChart = LightweightCharts.createChart(priceContainer, {
-                    width: width,
-                    height: height,
-                    layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
-                    grid: { vertLines: { color: '#f0f0f0' }, horzLines: { color: '#f0f0f0' } },
-                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                    rightPriceScale: { borderColor: '#cccccc' },
-                    // 修改：主图隐藏时间轴，避免与副图重复，实现时间轴只在最下方显示
-                    timeScale: { 
-                        visible: false, 
-                        borderColor: '#cccccc',
-                        timeVisible: true,
-                        secondsVisible: false,
-                    },
-                });
-
-                // 修复：增加对 addCandlestickSeries 存在的检查，并提供降级处理
-                let candleSeries;
-                if (typeof kLinePriceChart.addCandlestickSeries === 'function') {
-                    candleSeries = kLinePriceChart.addCandlestickSeries({
-                        upColor: '#f43f3e',
-                        downColor: '#00b42a',
-                        borderUpColor: '#f43f3e',
-                        borderDownColor: '#00b42a',
-                        wickUpColor: '#f43f3e',
-                        wickDownColor: '#00b42a',
-                        lastValueVisible: false, // 新增：隐藏最新价格标签（横线）
-                        priceLineVisible: false, // 新增：隐藏价格线（如果存在）
-                    });
-                } else if (typeof kLinePriceChart.addSeries === 'function') {
-                    // 降级方案：尝试使用通用 addSeries (适用于某些特定版本或构建)
-                    console.warn("[KChart] addCandlestickSeries not found, trying addSeries...");
-                    try {
-                        // 注意：addSeries 通常需要传入 SeriesConstructor，这里假设环境支持或直接报错以便排查
-                        // 在 v4 standalone 中通常直接暴露构造器，但如果没有，则无法渲染
-                        if (typeof LightweightCharts.CandlestickSeries !== 'undefined') {
-                            candleSeries = kLinePriceChart.addSeries(LightweightCharts.CandlestickSeries, {
-                                upColor: '#f43f3e',
-                                downColor: '#00b42a',
-                                borderUpColor: '#f43f3e',
-                                borderDownColor: '#00b42a',
-                                wickUpColor: '#f43f3e',
-                                wickDownColor: '#00b42a',
-                                lastValueVisible: false, // 新增：隐藏最新价格标签（横线）
-                                priceLineVisible: false, // 隐藏价格线
-                            });
-                        } else {
-                            throw new Error("CandlestickSeries constructor not found in LightweightCharts");
-                        }
-                    } catch (e) {
-                        throw new Error("Failed to create Candlestick Series: " + e.message);
-                    }
-                } else {
-                    throw new Error("LightweightCharts chart instance does not support adding series. Check library version.");
-                }
-                
-                candleSeries.setData(candleData);
-
-                // 新增：计算并添加 MA5, MA10, MA20 均线
-                const maPeriods = [5, 10, 20];
-                const maColors = ['#eab308', '#3b82f6', '#a855f7']; // 黄, 蓝, 紫
-                const maSeriesList = []; // 新增：存储均线系列以便更新图例
-                
-                maPeriods.forEach((period, index) => {
-                    const maData = [];
-                    for (let i = period - 1; i < candleData.length; i++) {
-                        let sum = 0;
-                        for (let j = 0; j < period; j++) {
-                            sum += candleData[i - j].close;
-                        }
-                        const maValue = sum / period;
-                        maData.push({
-                            time: candleData[i].time,
-                            value: maValue
-                        });
-                    }
-
-                    const maSeries = kLinePriceChart.addLineSeries({
-                        color: maColors[index],
-                        lineWidth: 1,
-                        lastValueVisible: false, // 确保隐藏右侧最新值标签
-                        priceLineVisible: false, // 确保隐藏价格线
-                    });
-                    maSeries.setData(maData);
-                    maSeriesList.push({ series: maSeries, period: period, color: maColors[index] });
-                });
-
-                // 修改：初始化图例 HTML，仅显示标签，数值由 JS 动态更新
-                if (legendContainer) {
-                    let legendHtml = '';
-                    maSeriesList.forEach(item => {
-                        legendHtml += `<span style="margin-right: 8px;"><span style="color: ${item.color}; font-weight: bold;">MA${item.period}</span>: <span id="ma-val-${item.period}">--</span></span>`;
-                    });
-                    legendContainer.innerHTML = legendHtml;
-                }
-
-                // 新增：订阅十字光标移动事件，更新图例数值 和 Tooltip
-                kLinePriceChart.subscribeCrosshairMove(param => {
-                    // 1. 更新左上角图例
-                    maSeriesList.forEach(item => {
-                        const valEl = document.getElementById(`ma-val-${item.period}`);
-                        if (!valEl) return;
-
-                        // 尝试从 param.seriesData 中获取当前悬停点的均线值
-                        const maData = param.seriesData ? param.seriesData.get(item.series) : null;
-                        
-                        if (maData && maData.value !== undefined) {
-                            // 鼠标在图表内，显示悬停点的值
-                            valEl.innerText = maData.value.toFixed(2);
-                        } else {
-                            // 鼠标移出或无数据，显示最新一个数据点的值
-                            // 重新计算最后一个点的 MA 值
-                            const lastIndex = candleData.length - 1;
-                            if (lastIndex >= item.period - 1) {
-                                let sum = 0;
-                                for(let k=0; k<item.period; k++) {
-                                    sum += candleData[lastIndex-k].close;
-                                }
-                                valEl.innerText = (sum/item.period).toFixed(2);
-                            } else {
-                                valEl.innerText = '--';
-                            }
-                        }
-                    });
-
-                    // 2. 更新 Tooltip
-                    // 修复：增加对 tooltipElement 存在性的再次检查，防止报错
-                    if (!tooltipElement) return;
-
-                    // 如果 param.point 为 undefined，说明鼠标移出了图表区域
-                    if (!param.point || !param.time || !param.seriesData) {
-                        tooltipElement.style.display = 'none';
-                        return;
-                    }
-
-                    // 获取当前时间点的 K 线数据
-                    // param.seriesData 是一个 Map，key 是 Series 对象，value 是该 Series 在当前时间点的数据
-                    const currentCandle = param.seriesData.get(candleSeries);
-                    
-                    if (!currentCandle) {
-                        tooltipElement.style.display = 'none';
-                        return;
-                    }
-
-                    // 构建 Tooltip 内容
-                    // 修改：格式化日期为 "2026年5月8日" 样式
-                    const dateObj = new Date(param.time);
-                    // 处理时区问题，确保显示的是交易日期而非本地时间转换后的日期（lightweight-charts 传入的 time 字符串通常代表当天零点 UTC 或本地时间，视配置而定，这里按字符串解析更稳妥）
-                    // 由于 lightweight-charts v3/v4 传入 crosshair 的 time 可能是 string "YYYY-MM-DD" 或 timestamp
-                    let dateStr = param.time;
-                    if (typeof param.time === 'string') {
-                        const parts = param.time.split('-');
-                        if (parts.length === 3) {
-                            // 去除前导零以符合“5月”而非“05月”的习惯，如果需要“05月”可保留
-                            const y = parts[0];
-                            const m = parseInt(parts[1], 10);
-                            const d = parseInt(parts[2], 10);
-                            dateStr = `${y}年${m}月${d}日`;
-                        }
-                    } else {
-                        // 如果是时间戳，按本地时间格式化
-                        const y = dateObj.getFullYear();
-                        const m = dateObj.getMonth() + 1;
-                        const d = dateObj.getDate();
-                        dateStr = `${y}年${m}月${d}日`;
-                    }
-                    
-                    // 格式化数值
-                    const fmt = (num) => num.toFixed(2);
-
-                    const open = fmt(currentCandle.open);
-                    const high = fmt(currentCandle.high);
-                    const low = fmt(currentCandle.low);
-                    const close = fmt(currentCandle.close);
-                    
-                    // 获取 MA 值
-                    let maHtml = '';
-                    maSeriesList.forEach(item => {
-                        const maData = param.seriesData.get(item.series);
-                        const maVal = maData ? fmt(maData.value) : '--';
-                        maHtml += `<div class="tooltip-row"><span class="tooltip-label" style="color:${item.color}">MA${item.period}</span><span class="tooltip-val">${maVal}</span></div>`;
-                    });
-
-                    // 修改：确保 Tooltip 结构清晰，包含所有要求字段
-                    tooltipElement.innerHTML = `
-                        <div class="tooltip-date">${dateStr}</div>
-                        <div class="tooltip-row"><span class="tooltip-label">开盘:</span><span class="tooltip-val">${open}</span></div>
-                        <div class="tooltip-row"><span class="tooltip-label">最高:</span><span class="tooltip-val">${high}</span></div>
-                        <div class="tooltip-row"><span class="tooltip-label">最低:</span><span class="tooltip-val">${low}</span></div>
-                        <div class="tooltip-row"><span class="tooltip-label">收盘:</span><span class="tooltip-val" style="color:${currentCandle.close >= currentCandle.open ? '#f43f3e' : '#00b42a'}">${close}</span></div>
-                        ${maHtml}
-                    `;
-
-                    // 显示并定位 Tooltip
-                    tooltipElement.style.display = 'block';
-                    
-                    // 计算位置：跟随鼠标，但避免超出容器边界
-                    // param.point.x 和 param.point.y 是相对于图表容器的坐标
-                    // 修复：确保基于 priceContainer 的边界进行计算，防止定位错误
-                    const chartRect = priceContainer.getBoundingClientRect();
-                    
-                    // 使用 param.point.x/y 加上容器偏移量得到页面绝对位置，或者直接相对于容器定位
-                    // 这里我们保持相对于容器的定位，但需要确保 tooltip 是 absolute 且父容器是 relative
-                    // 检查 CSS: #chart-k-price-div 是否有 position: relative? 
-                    // 在 HTML 结构中，#chart-k-price-div 在 .chart-wrapper 中，.chart-wrapper 有 position: relative
-                    
-                    // 修改：直接使用 param.point.x/y 作为相对于 priceContainer 的偏移
-                    // 因为 tooltip 是 absolute 定位，且其父元素 .chart-wrapper 是 relative
-                    // 我们需要将 tooltip 移动到 .chart-wrapper 内部，或者计算相对于页面的位置
-                    // 为了简化，我们假设 tooltip 是 body 的子元素或者固定定位，但原代码中它在 .chart-wrapper 内
-                    // 原 CSS: #k-tooltip { position: absolute; ... }
-                    // 原 HTML: <div class="chart-wrapper"> <div id="k-tooltip"></div> ... </div>
-                    // 所以 param.point.x/y 是相对于 priceContainer (即 .chart-wrapper 的子元素) 的
-                    // 但 tooltip 是 .chart-wrapper 的子元素，所以 param.point.x/y 可以直接用于 left/top
-                    
-                    let left = param.point.x + 15; // 鼠标右侧偏移
-                    let top = param.point.y + 15;  // 鼠标下方偏移
-
-                    // 获取 tooltip 的实际尺寸
-                    const tooltipRect = tooltipElement.getBoundingClientRect();
-                    
-                    // 边界检查：如果右侧空间不足，显示在左侧
-                    // 注意：这里的 width 是 priceContainer 的宽度
-                    if (left + tooltipRect.width > width) {
-                        left = param.point.x - tooltipRect.width - 15;
-                    }
-                    // 边界检查：如果底部空间不足，显示在上方
-                    if (top + tooltipRect.height > height) {
-                        top = param.point.y - tooltipRect.height - 15;
-                    }
-                    
-                    // 确保不超出左/上边界
-                    if (left < 0) left = 5;
-                    if (top < 0) top = 5;
-
-                    tooltipElement.style.left = `${left}px`;
-                    tooltipElement.style.top = `${top}px`;
-                });
-
-                // 创建K线成交量图
-                kLineVolumeChart = LightweightCharts.createChart(volumeContainer, {
-                    width: volWidth,
-                    height: volHeight,
-                    layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
-                    grid: { vertLines: { visible: false }, horzLines: { visible: false } },
-                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                    rightPriceScale: { visible: false },
-                    // 修改：成交量图显示时间轴，作为整个图表区域的最底部时间轴
-                    timeScale: { 
-                        visible: true, 
-                        borderColor: '#cccccc',
-                        timeVisible: true,
-                        secondsVisible: false,
-                    },
-                });
-
-                // 修改：自定义成交量格式化函数，支持“万”和“亿”
-                const volumeFormatter = (value) => {
-                    if (value >= 100000000) {
-                        return (value / 100000000).toFixed(2) + '亿';
-                    } else if (value >= 10000) {
-                        return (value / 10000).toFixed(2) + '万';
-                    }
-                    return value.toFixed(0);
-                };
-
-                const volumeSeries = kLineVolumeChart.addHistogramSeries({
-                    color: '#26a69a',
-                    priceFormat: {
-                        type: 'custom',
-                        formatter: volumeFormatter,
-                    },
-                    priceScaleId: '',
-                    lastValueVisible: false, // 新增：隐藏成交量最新值标签
-                });
-                // 修改：调整 scaleMargins.top 从 0.8 降至 0.5，使成交量柱体占据更多垂直空间（原为底部20%，现为底部50%）
-                volumeSeries.priceScale().applyOptions({
-                    scaleMargins: { top: 0.5, bottom: 0 },
-                });
-                volumeSeries.setData(volumeData);
-
-
-
-                // 同步时间轴
-                kLinePriceChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-                    if (range) {
-                        kLineVolumeChart.timeScale().setVisibleLogicalRange(range);
-                    }
-                });
-                kLineVolumeChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-                    if (range) {
-                        kLinePriceChart.timeScale().setVisibleLogicalRange(range);
-                    }
-                });
-
-                // 响应式
-                new ResizeObserver(entries => {
-                    if (entries.length === 0 || entries[0].target !== priceContainer) { return; }
-                    const newRect = entries[0].contentRect;
-                    if (newRect.width > 0 && newRect.height > 0) {
-                        kLinePriceChart.applyOptions({ height: newRect.height, width: newRect.width });
-                        kLineVolumeChart.applyOptions({ height: volumeContainer.clientHeight, width: newRect.width });
-                    }
-                }).observe(priceContainer);
-
-                // 默认显示最近 60 个单位（日/周/月），并确保内容适配
-                // 使用 setTimeout 确保 DOM 渲染完成后再调整视图
-                setTimeout(() => {
-                    if (kLinePriceChart && kLineVolumeChart) {
-                         // 再次确认尺寸，防止 display:none 切换时的尺寸为0问题
-                        const finalWidth = priceContainer.clientWidth;
-                        const finalHeight = priceContainer.clientHeight;
-                        if (finalWidth > 0 && finalHeight > 0) {
-                             kLinePriceChart.applyOptions({ width: finalWidth, height: finalHeight });
-                             kLineVolumeChart.applyOptions({ width: finalWidth, height: volumeContainer.clientHeight });
-                        }
-                        
-                        // 新增：强制设置初始显示范围为最近 60 条数据 (比30条更宽泛，方便看趋势)
-                        const dataLength = candleData.length;
-                        const viewCount = 60; 
-                        
-                        if (dataLength > 0) {
-                            // 计算起始索引，确保不为负数
-                            const fromIndex = Math.max(0, dataLength - viewCount);
-                            const toIndex = dataLength - 1;
-                            
-                            // 获取对应的时间点
-                            const fromTime = candleData[fromIndex].time;
-                            const toTime = candleData[toIndex].time;
-                            
-                            // 设置可见时间范围
-                            kLinePriceChart.timeScale().setVisibleRange({
-                                from: fromTime,
-                                to: toTime
-                            });
-                            
-                            // 同步成交量图的时间范围
-                            kLineVolumeChart.timeScale().setVisibleRange({
-                                from: fromTime,
-                                to: toTime
-                            });
-                        } else {
-                            // 如果数据不足30条，则适应内容
-                            kLinePriceChart.timeScale().fitContent();
-                        }
-                    }
-                }, 50);
-
-            } catch (e) {
-                console.error("[KChart] Critical error:", e);
-                priceContainer.innerText = "图表渲染错误: " + e.message;
-            }
-        }
-
-        // --- AI 分析 ---
-        async function showAiAnalysis(symbol, name) {
-            document.getElementById('ai-view').style.display = 'flex';
-            document.getElementById('ai-title').innerText = `${name} (${symbol}) - AI 分析`;
-            document.getElementById('ai-body').innerText = "正在连接 AI 引擎进行分析...";
-            
-            try {
-                const res = await fetch(`/api/ai_analysis?code=${symbol}`);
-                const result = await res.json();
-                if (result.status === 'success') {
-                    document.getElementById('ai-body').innerText = result.analysis;
-                } else {
-                    document.getElementById('ai-body').innerText = "分析失败，请稍后重试。";
-                }
-            } catch (e) {
-                document.getElementById('ai-body').innerText = "网络错误，无法获取分析结果。";
-            }
-        }
-
-        function closeAi() {
-            document.getElementById('ai-view').style.display = 'none';
-        }
-
-        // 新增：更新配置
-        async function updateConfig() {
-            const pageInput = document.getElementById('page-refresh-input');
-            const dataInput = document.getElementById('data-fetch-input');
-            
-            const pageVal = parseInt(pageInput.value);
-            const dataVal = parseInt(dataInput.value);
-
-            if (!pageVal || pageVal < 1) {
-                alert("页面刷新间隔必须大于等于1秒");
-                return;
-            }
-            if (!dataVal || dataVal < 1) {
-                alert("数据获取间隔必须大于等于1秒");
-                return;
-            }
-
-            try {
-                const res = await fetch('/api/update_config', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ 
-                        page_refresh_interval: pageVal,
-                        data_fetch_interval: dataVal 
-                    })
-                });
-                const result = await res.json();
-                if (result.status === 'success') {
-                    pageRefreshInterval = pageVal;
-                    dataFetchInterval = dataVal;
-                    startRefreshTimer(); // 重启前端定时器
-                    alert("配置已更新");
-                } else {
-                    alert("设置失败: " + result.msg);
-                }
-            } catch (e) {
-                console.error("Update config error:", e);
-                alert("网络错误");
-            }
-        }
-
-        init();
-    </script>
-</body>
-</html>
-
-
-
-
-
-
-
-
-
