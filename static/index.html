@@ -109,13 +109,13 @@
         <table>
             <thead>
                 <tr>
-                    <th onclick="handleSort('symbol')">代码 <span class="sort-icon"></span></th>
-                    <th onclick="handleSort('name')">名称 <span class="sort-icon"></span></th>
-                    <th onclick="handleSort('price')">最新价 <span class="sort-icon"></span></th>
-                    <th onclick="handleSort('change_percent')">涨跌幅 <span class="sort-icon"></span></th>
-                    <th onclick="handleSort('high')">最高 <span class="sort-icon"></span></th>
-                    <th onclick="handleSort('low')">最低 <span class="sort-icon"></span></th>
-                    <th onclick="handleSort('amount')">成交额 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('symbol', this)">代码 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('name', this)">名称 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('price', this)">最新价 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('change_percent', this)">涨跌幅 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('high', this)">最高 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('low', this)">最低 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('amount', this)">成交额 <span class="sort-icon"></span></th>
                     <th>操作</th>
                 </tr>
             </thead>
@@ -171,7 +171,7 @@
     }
 
     // 新增：处理表头点击排序
-    function handleSort(field) {
+    function handleSort(field, thElement) {
         if (sortField === field) {
             // 如果点击同一列，切换顺序
             sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
@@ -182,14 +182,14 @@
         }
         
         // 更新表头图标
-        updateSortIcons();
+        updateSortIcons(thElement);
         
         // 重新渲染表格
         renderStocksTable();
     }
 
     // 新增：更新表头排序图标
-    function updateSortIcons() {
+    function updateSortIcons(activeTh) {
         const headers = document.querySelectorAll('th');
         headers.forEach(th => {
             th.classList.remove('active-sort');

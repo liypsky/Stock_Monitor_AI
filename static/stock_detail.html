@@ -143,9 +143,9 @@
 
     <!-- 第三行：AI 分析标签页 -->
     <div class="ai-tabs">
-        <button class="ai-tab-btn active" onclick="triggerAiAnalysis('trend')">趋势研判</button>
-        <button class="ai-tab-btn" onclick="triggerAiAnalysis('timing')">择时信号</button>
-        <button class="ai-tab-btn" onclick="triggerAiAnalysis('turning')">拐点检测</button>
+        <button class="ai-tab-btn active" onclick="triggerAiAnalysis('trend', this)">趋势研判</button>
+        <button class="ai-tab-btn" onclick="triggerAiAnalysis('timing', this)">择时信号</button>
+        <button class="ai-tab-btn" onclick="triggerAiAnalysis('turning', this)">拐点检测</button>
     </div>
 
     <!-- AI 分析结果展示区 -->
@@ -155,11 +155,14 @@
 
     <!-- 第四行：图表标签页 -->
     <div class="chart-tabs">
-        <button class="chart-tab-btn active" onclick="switchChartTab('minute')">分时</button>
-        <button class="chart-tab-btn" onclick="switchChartTab('kday')">日K</button>
-        <button class="chart-tab-btn" onclick="switchChartTab('kweek')">周K</button>
-        <button class="chart-tab-btn" onclick="switchChartTab('kmonth')">月K</button>
+        <button class="chart-tab-btn active" onclick="switchChartTab('minute', this)">分时</button>
+        <button class="chart-tab-btn" onclick="switchChartTab('kday', this)">日K</button>
+        <button class="chart-tab-btn" onclick="switchChartTab('kweek', this)">周K</button>
+        <button class="chart-tab-btn" onclick="switchChartTab('kmonth', this)">月K</button>
     </div>
+
+    <!-- 新增：图表日期提示 -->
+    <div id="chart-date-tip" style="text-align: center; color: #666; font-size: 12px; margin-bottom: 5px; height: 15px;"></div>
 
     <!-- 走势图 -->
     <div id="chart-container"></div>
@@ -181,10 +184,15 @@
 
     // 初始化
     async function init() {
-        await fetchStockDetail();
-        await loadAiConfig(); // 预加载 AI 配置
-        initChart();
-        await loadChartData(currentChartTab);
+        // 并行执行不相互依赖的初始化任务，提升加载速度
+        await Promise.all([
+            fetchStockDetail(),
+            loadAiConfig(),
+            (async () => {
+                initChart();
+                await loadChartData(currentChartTab);
+            })()
+        ]);
         
         // 定时刷新详情数据 (每3秒)
         setInterval(fetchStockDetail, 3000);
@@ -256,10 +264,13 @@
     }
 
     // 触发 AI 分析
-    async function triggerAiAnalysis(type) {
+    async function triggerAiAnalysis(type, btnElement) {
         // 更新按钮样式
         document.querySelectorAll('.ai-tab-btn').forEach(btn => btn.classList.remove('active'));
-        event.target.classList.add('active');
+        // 使用传入的元素，增加健壮性，避免依赖全局 event
+        if (btnElement) {
+            btnElement.classList.add('active');
+        }
 
         const container = document.getElementById('ai-analysis-container');
         container.innerHTML = '<div class="ai-loading">正在连接 AI 分析师，整理数据中...</div>';
@@ -349,11 +360,14 @@
     }
 
     // 切换图表标签
-    function switchChartTab(type) {
+    function switchChartTab(type, btnElement) {
         currentChartTab = type;
         // 更新按钮样式
         document.querySelectorAll('.chart-tab-btn').forEach(btn => btn.classList.remove('active'));
-        event.target.classList.add('active');
+        // 使用传入的元素，增加健壮性，避免依赖全局 event
+        if (btnElement) {
+            btnElement.classList.add('active');
+        }
         
         loadChartData(type);
     }
@@ -372,7 +386,7 @@
             if (response.ok) {
                 const res = await response.json();
                 if (res.status === 'success') {
-                    renderChart(type, res.data);
+                    renderChart(type, res.data, res.trade_date, res.is_trading_time);
                 }
             }
         } catch (error) {
@@ -381,37 +395,121 @@
     }
 
     // 渲染图表
-    function renderChart(type, data) {
+    function renderChart(type, data, tradeDate, isTradingTime) {
+        // 更新图表日期提示
+        const tipEl = document.getElementById('chart-date-tip');
+        if (type === 'minute' && tradeDate) {
+            // 格式化日期显示，例如：2023-10-27 (周五)
+            let dateDisplay = tradeDate;
+            if (!isTradingTime) {
+                dateDisplay += " (非交易时间/历史数据)";
+            }
+            tipEl.innerText = `数据日期: ${dateDisplay}`;
+        } else {
+            tipEl.innerText = '';
+        }
+
         if (!data || data.length === 0) {
             chartInstance.clear();
+            // 新增：当数据为空时，显示提示信息
+            const chartDom = document.getElementById('chart-container');
+            if (type === 'minute') {
+                chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">暂无分时数据 (可能为非交易时间或停牌)</div>';
+            } else {
+                chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">暂无K线数据</div>';
+            }
             return;
         }
 
+        // 确保图表容器干净，移除之前的提示文字
+        const chartDom = document.getElementById('chart-container');
+        chartDom.innerHTML = ''; 
+        
         let option = {};
 
         if (type === 'minute') {
             // 分时图逻辑
-            const times = data.map(item => item.time);
-            const prices = data.map(item => item.price);
-            const avgPrices = data.map(item => item.avg_price);
-            
+            // 1. 数据预处理：确保时间格式统一且可解析，并按时间排序
+            const processedData = data.map((item, index) => {
+                let dateObj = null;
+                const timeStr = item.time;
+
+                // 策略1: 尝试直接解析
+                dateObj = new Date(timeStr);
+
+                // 策略2: 如果失败，尝试替换分隔符 (兼容 Safari 等对 '-' 支持不好的旧环境)
+                if (isNaN(dateObj.getTime())) {
+                    dateObj = new Date(timeStr.replace(/-/g, '/'));
+                }
+
+                // 策略3: 如果仍然失败，手动解析 "YYYY-MM-DD HH:mm" 或 "YYYY-MM-DD HH:mm:ss"
+                if (isNaN(dateObj.getTime())) {
+                    // 正则匹配 YYYY-MM-DD HH:mm[:ss]
+                    const match = timeStr.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/);
+                    if (match) {
+                        const year = parseInt(match[1], 10);
+                        const month = parseInt(match[2], 10) - 1; // Month is 0-indexed
+                        const day = parseInt(match[3], 10);
+                        const hour = parseInt(match[4], 10);
+                        const minute = parseInt(match[5], 10);
+                        const second = match[6] ? parseInt(match[6], 10) : 0;
+                        
+                        dateObj = new Date(year, month, day, hour, minute, second);
+                    }
+                }
+
+                // 再次检查是否有效
+                if (!dateObj || isNaN(dateObj.getTime())) {
+                    // 打印详细错误日志，帮助调试
+                    console.warn(`Invalid time format at index ${index}: "${timeStr}"`, item);
+                    return null;
+                }
+                
+                return {
+                    time: dateObj,
+                    price: item.price,
+                    avg_price: item.avg_price
+                };
+            }).filter(item => item !== null); // 过滤掉无效数据
+
+            // 按时间升序排序
+            processedData.sort((a, b) => a.time - b.time);
+
+            if (processedData.length === 0) {
+                console.error('No valid minute data to render after processing. Original data sample:', data.slice(0, 2));
+                chartInstance.clear();
+                return;
+            } else {
+                // 打印一条成功解析的日志用于调试
+                console.log('Minute data processed successfully. Count:', processedData.length, 'Sample:', processedData[0]);
+            }
+
             option = {
                 tooltip: { 
                     trigger: 'axis',
                     formatter: function (params) {
-                        let res = params[0].name + '<br/>';
+                        if (!params || params.length === 0) return '';
+                        // 获取时间，从 axisValue 获取，ECharts time 轴会自动格式化
+                        let timeStr = params[0].axisValue; 
+                        let res = `<div style="font-weight:bold">${timeStr}</div>`;
+                        
                         params.forEach(p => {
-                            res += p.marker + p.seriesName + ': ' + p.value.toFixed(2) + '<br/>';
+                            // 保留两位小数
+                            res += `${p.marker} ${p.seriesName}: ${p.value[1].toFixed(2)}<br/>`;
                         });
                         return res;
                     }
                 },
                 grid: { left: '5%', right: '5%', bottom: '10%', top: '10%' },
                 xAxis: { 
-                    type: 'category', 
-                    data: times, 
+                    type: 'time', 
                     boundaryGap: false,
-                    axisLabel: { formatter: '{value}', rotate: 0, interval: 'auto' }
+                    axisLabel: { 
+                        formatter: '{HH}:{mm}', 
+                        rotate: 0, 
+                        interval: 'auto' 
+                    },
+                    splitLine: { show: true, lineStyle: { type: 'dashed' } }
                 },
                 yAxis: { 
                     type: 'value', 
@@ -419,8 +517,25 @@
                     splitLine: { show: true, lineStyle: { type: 'dashed' } }
                 },
                 series: [
-                    { name: '价格', type: 'line', data: prices, smooth: false, showSymbol: false, lineStyle: { width: 1.5, color: '#3498db' }, areaStyle: { opacity: 0.1 } },
-                    { name: '均价', type: 'line', data: avgPrices, smooth: false, showSymbol: false, lineStyle: { width: 1, type: 'dashed', color: '#f39c12' } }
+                    { 
+                        name: '价格', 
+                        type: 'line', 
+                        // 修改：使用预处理后的数据，格式为 [Date Object, Value]
+                        data: processedData.map(i => [i.time, i.price]), 
+                        smooth: false, 
+                        showSymbol: false, 
+                        lineStyle: { width: 1.5, color: '#3498db' }, 
+                        areaStyle: { opacity: 0.1 } 
+                    },
+                    { 
+                        name: '均价', 
+                        type: 'line', 
+                        // 修改：使用预处理后的数据
+                        data: processedData.map(i => [i.time, i.avg_price]), 
+                        smooth: false, 
+                        showSymbol: false, 
+                        lineStyle: { width: 1, type: 'dashed', color: '#f39c12' } 
+                    }
                 ]
             };
         } else {

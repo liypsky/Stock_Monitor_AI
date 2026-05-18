@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::fs;
-use chrono::Datelike;
+use chrono::{Local, Datelike, Timelike};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockInfo {
@@ -964,9 +964,8 @@ async fn get_stock_minute_data(
 ) -> Json<Value> {
     if let Some(code) = params.get("code") {
         let normalized_code = normalize_stock_code(code);
-        let datalen = params.get("datalen").unwrap_or(&"240".to_string()).parse::<usize>().unwrap_or(240);
-
-        // 转换代码格式为东方财富接口所需格式
+        
+        // 转换代码格式为东方财富格式 (例如 sh600519 -> 1.600519)
         let secid = if normalized_code.starts_with("sh") {
             format!("1.{}", &normalized_code[2..])
         } else if normalized_code.starts_with("sz") {
@@ -977,27 +976,28 @@ async fn get_stock_minute_data(
             format!("0.{}", normalized_code)
         };
 
-        // 新增：计算需要请求的天数 (ndays)
-        // 目标：始终获取最近两个交易日的数据
-        // 周一 (0): 需要上周五 + 周一。由于中间隔了周六日，ndays=3 才能涵盖周五到周一的时间跨度
-        // 周二 (1): 需要周一 + 周二。连续交易日，ndays=2
-        // 周三 (2): 需要周二 + 周三。连续交易日，ndays=2
-        // 周四 (3): 需要周三 + 周四。连续交易日，ndays=2
-        // 周五 (4): 需要周四 + 周五。连续交易日，ndays=2
-        // 周末 (5,6): 通常不开盘，若查询则看最近一天或两天，这里统一处理为2天以获取周五数据
+        // 计算预期的交易日描述，用于前端提示
+        let now = Local::now();
+        let weekday = now.weekday().num_days_from_monday(); // 1=Mon, 7=Sun
+        let hour = now.hour();
+        let minute = now.minute();
+        let is_trading_time = (weekday >= 1 && weekday <= 5) && 
+                              ((hour == 9 && minute >= 30) || (hour == 10) || (hour == 11) || 
+                               (hour == 13) || (hour == 14) || (hour == 15 && minute == 0));
         
-        let now = chrono::Local::now();
-        let weekday = now.weekday().num_days_from_monday(); // Monday = 0, Sunday = 6
-        
-        let ndays = if weekday == 0 {
-            3 // 周一：取3天以覆盖上周五
-        } else {
-            2 // 其他交易日：取2天以覆盖昨天和今天
-        };
+        let mut trade_date_hint = "今日".to_string();
+        if !is_trading_time {
+            // 简单估算上一个交易日，用于提示
+            // 注意：这只是一个提示，实际数据由东财接口决定
+            trade_date_hint = "最近交易日".to_string();
+        }
 
+        // 使用东方财富分时数据接口
+        // fields2: f51(时间), f52(最新价), f53(均价), f54(成交量), f55(成交额), f56:买一量...
+        // isclose=1 表示包含收盘价，datalen=240 获取全天数据
         let url = format!(
-            "http://push2.eastmoney.com/api/qt/stock/trends2/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&ut=fa5fd1943c7b386f172d6893dbfba10b&ndays={}&iscr=0&iscca=0&datalen={}",
-            secid, ndays, datalen
+            "http://push2.eastmoney.com/api/qt/stock/trends/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&isclose=1&datalen=240",
+            secid
         );
 
         let client = reqwest::Client::builder()
@@ -1014,61 +1014,50 @@ async fn get_stock_minute_data(
         match client.get(&url).send().await {
             Ok(resp) => {
                 if let Ok(text) = resp.text().await {
-                    // 解析 JSON
                     if let Ok(root) = serde_json::from_str::<Value>(&text) {
+                        // 增加容错：检查 data 字段是否存在且为对象
                         if let Some(data) = root.get("data") {
-                            // 新增：检查 data 是否为 null
-                            if data.is_null() {
-                                eprintln!("⚠️ EastMoney Minute Data is null for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
-                                return Json(json!({"status": "error", "msg": "数据源无返回"}));
+                            // 如果 data 是数组（通常表示错误或无数据），直接返回空或错误
+                            if data.is_array() {
+                                eprintln!("⚠️ Eastmoney minute data is array (likely error/no data) for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
+                                return Json(json!({
+                                    "status": "success",
+                                    "data": [],
+                                    "msg": "暂无分时数据"
+                                }));
                             }
-
+                            
+                            // 只有当 data 是对象时，才尝试获取 trends
                             if let Some(trends) = data.get("trends") {
                                 if let Some(arr) = trends.as_array() {
                                     let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
                                     
-                                    // 获取交易日期并清洗格式
-                                    let raw_trade_date = data.get("tradeDate").and_then(|v| v.as_str()).unwrap_or("");
-                                    // 清洗 tradeDate: 只保留 YYYY-MM-DD 部分，防止包含时间或其他字符
-                                    // 兼容格式: "2023-10-27 15:00:00" 或 "2023-10-27"
-                                    let trade_date = if raw_trade_date.len() >= 10 {
-                                        raw_trade_date[..10].to_string()
-                                    } else {
-                                        raw_trade_date.to_string()
-                                    };
+                                    // 获取交易日期，用于拼接完整时间
+                                    let trade_date = data.get("date").and_then(|v| v.as_str()).unwrap_or("");
 
-                                    println!("Debug: tradeDate raw='{}', cleaned='{}'", raw_trade_date, trade_date);
-
-                                    for item in arr {
-                                        if let Some(s) = item.as_str() {
+                                    for trend_item in arr {
+                                        if let Some(s) = trend_item.as_str() {
                                             let parts: Vec<&str> = s.split(',').collect();
-                                            // f51:时间 (HH:MM), f52:价格, f53:均价, f54:成交量, f55:成交额
+                                            // 东方财富分时数据格式: 
+                                            // f51:时间(HH:MM), f52:最新价, f53:均价, f54:成交量(手), f55:成交额(元), f56:买一量...
                                             if parts.len() >= 5 {
-                                                let time_str_raw = parts[0].trim(); 
+                                                let time_str_raw = parts[0].trim();
                                                 let price = parts[1].parse::<f64>().unwrap_or(0.0);
                                                 let avg_price = parts[2].parse::<f64>().unwrap_or(0.0);
-                                                let volume = parts[3].parse::<f64>().unwrap_or(0.0); 
+                                                let volume = parts[3].parse::<f64>().unwrap_or(0.0); // 单位：手
+                                                // let amount = parts[4].parse::<f64>().unwrap_or(0.0); // 成交额
                                                 
-                                                // 修复：构建严格的标准时间字符串 "YYYY-MM-DD HH:mm"
+                                                // 拼接完整时间: YYYY-MM-DD HH:MM
                                                 let full_time = if !trade_date.is_empty() && !time_str_raw.is_empty() {
-                                                    // 只取前5位字符作为 HH:MM，防止包含秒数 (如 "09:30:00" -> "09:30")
+                                                    // 确保时间格式为 HH:MM，有些可能带秒 HH:MM:SS，取前5位
                                                     let clean_time = if time_str_raw.len() >= 5 {
                                                         time_str_raw[..5].to_string()
                                                     } else {
                                                         time_str_raw.to_string()
                                                     };
                                                     format!("{} {}", trade_date, clean_time)
-                                                } else if !time_str_raw.is_empty() {
-                                                    // 如果没有 tradeDate，使用当前日期（仅在极端情况下）
-                                                    let today = chrono::Local::now().format("%Y-%m-%d");
-                                                    let clean_time = if time_str_raw.len() >= 5 {
-                                                        time_str_raw[..5].to_string()
-                                                    } else {
-                                                        time_str_raw.to_string()
-                                                    };
-                                                    format!("{} {}", today, clean_time)
                                                 } else {
-                                                    continue; 
+                                                    continue;
                                                 };
 
                                                 minute_data.push(MinuteDataPoint {
@@ -1076,38 +1065,33 @@ async fn get_stock_minute_data(
                                                     price,
                                                     avg_price,
                                                     volume,
-                                                    open: price, 
+                                                    open: price, // 分时图中 open 通常不单独显示，或用第一笔价格
                                                     close: price,
                                                 });
                                             }
                                         }
                                     }
                                     
-                                    // 新增：如果解析后数据为空，但数组不为空（理论上不可能，除非所有行格式都错），打印日志
-                                    if minute_data.is_empty() && !arr.is_empty() {
-                                        eprintln!("⚠️ Parsed minute data is empty despite non-empty array for {}. Sample raw data: {}", normalized_code, arr.first().map_or("N/A", |v| v.as_str().unwrap_or("N/A")));
-                                    }
-
-                                    println!("Debug: Parsed {} minute data points for {}", minute_data.len(), normalized_code);
+                                    println!("Debug: Parsed {} eastmoney minute data points for {}", minute_data.len(), normalized_code);
                                     return Json(json!({
                                         "status": "success",
-                                        "data": minute_data
+                                        "data": minute_data,
+                                        "trade_date": trade_date,
+                                        "is_trading_time": is_trading_time
                                     }));
                                 }
                             } else {
-                                // 新增：trends 字段缺失
-                                eprintln!("⚠️ No 'trends' field in response for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
+                                eprintln!("⚠️ No 'trends' field in Eastmoney data for {}. Data keys: {:?}", normalized_code, data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
                             }
                         } else {
-                             // 新增：data 字段缺失
-                             eprintln!("⚠️ No 'data' field in response for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
+                             eprintln!("⚠️ No 'data' field in Eastmoney response for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
                         }
                     } else {
-                         eprintln!("❌ Failed to parse JSON for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
+                         eprintln!("❌ Failed to parse Eastmoney minute JSON for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
                     }
                 }
             }
-            Err(e) => eprintln!("Fetch minute data error: {}", e)
+            Err(e) => eprintln!("Fetch Eastmoney minute data error: {}", e)
         }
     }
     Json(json!({"status": "error", "msg": "fetch failed"}))
