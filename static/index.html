@@ -132,7 +132,8 @@
     // 获取配置 (indices 和 stocks 列表)
     async function fetchConfig() {
         try {
-            const response = await fetch(CONFIG_URL);
+            // 添加时间戳防止缓存
+            const response = await fetch(CONFIG_URL + '?t=' + new Date().getTime());
             if (response.ok) {
                 configData = await response.json();
                 console.log('Config loaded:', configData);

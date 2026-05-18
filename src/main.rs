@@ -80,12 +80,18 @@ pub struct KLineDataPoint {
 pub struct AiConfig {
     pub id: String,
     pub name: String,
+    #[serde(rename = "type")]
     pub config_type: String,
+    #[serde(rename = "apiUrl")]
     pub api_url: String,
+    #[serde(rename = "apiKey", default)]
     pub api_key: String,
+    #[serde(rename = "mainModels", default)]
     pub main_models: String,
+    #[serde(rename = "fallbackModels", default)]
     pub fallback_models: String,
     pub model: String,
+    #[serde(rename = "timeoutSeconds", default)]
     pub timeout_seconds: u64,
 }
 
@@ -228,8 +234,12 @@ async fn main() {
     let (initial_indices, initial_stocks, initial_data_interval, _initial_page_interval, initial_ai_configs) = if let Some(saved_config) = load_config_from_file() {
         (saved_config.indices, saved_config.stocks, saved_config.data_fetch_interval, saved_config.page_refresh_interval, saved_config.ai_configs)
     } else {
+        println!("⚠️ Using default configuration as no valid config file found.");
         (default_indices, default_stocks, default_data_interval, default_page_interval, default_ai_configs)
     };
+
+    println!("📋 Loaded Indices: {:?}", initial_indices);
+    println!("📋 Loaded Stocks: {:?}", initial_stocks);
 
     let notify = Arc::new(Notify::new());
 
