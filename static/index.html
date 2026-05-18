@@ -53,7 +53,10 @@
 
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background-color: #f8f9fa; color: #2c3e50; font-weight: 600; }
+        th { background-color: #f8f9fa; color: #2c3e50; font-weight: 600; cursor: pointer; user-select: none; position: relative; }
+        th:hover { background-color: #e9ecef; }
+        .sort-icon { margin-left: 5px; font-size: 0.8em; color: #95a5a6; }
+        th.active-sort .sort-icon { color: #3498db; }
         tr:hover { background-color: #f1f1f1; }
         
         /* 操作按钮 */
@@ -106,13 +109,13 @@
         <table>
             <thead>
                 <tr>
-                    <th>代码</th>
-                    <th>名称</th>
-                    <th>最新价</th>
-                    <th>涨跌幅</th>
-                    <th>最高</th>
-                    <th>最低</th>
-                    <th>成交额(元)</th>
+                    <th onclick="handleSort('symbol')">代码 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('name')">名称 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('price')">最新价 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('change_percent')">涨跌幅 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('high')">最高 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('low')">最低 <span class="sort-icon"></span></th>
+                    <th onclick="handleSort('amount')">成交额 <span class="sort-icon"></span></th>
                     <th>操作</th>
                 </tr>
             </thead>
@@ -148,6 +151,10 @@
     
     let configData = null;
     let marketDataMap = new Map(); // 用于快速查找股票信息 key: symbol, value: stockInfo
+    
+    // 新增：排序状态
+    let sortField = null;
+    let sortOrder = 'asc'; // 'asc' or 'desc'
 
     // 初始化
     async function init() {
@@ -161,6 +168,43 @@
             await fetchMarketData();
             renderPage();
         }, interval);
+    }
+
+    // 新增：处理表头点击排序
+    function handleSort(field) {
+        if (sortField === field) {
+            // 如果点击同一列，切换顺序
+            sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+        } else {
+            // 如果点击新列，默认升序
+            sortField = field;
+            sortOrder = 'asc';
+        }
+        
+        // 更新表头图标
+        updateSortIcons();
+        
+        // 重新渲染表格
+        renderStocksTable();
+    }
+
+    // 新增：更新表头排序图标
+    function updateSortIcons() {
+        const headers = document.querySelectorAll('th');
+        headers.forEach(th => {
+            th.classList.remove('active-sort');
+            const icon = th.querySelector('.sort-icon');
+            if (icon) icon.innerText = '';
+            
+            // 检查该 th 是否对应当前排序字段
+            // 简单判断：通过 onclick 属性内容或者索引，这里通过遍历匹配 onclick 字符串
+            if (th.getAttribute('onclick') && th.getAttribute('onclick').includes(`'${sortField}'`)) {
+                th.classList.add('active-sort');
+                if (icon) {
+                    icon.innerText = sortOrder === 'asc' ? '▲' : '▼';
+                }
+            }
+        });
     }
 
     // 获取配置 (indices 和 stocks 列表)
@@ -247,7 +291,39 @@
             return;
         }
 
-        configData.stocks.forEach(symbol => {
+        // 新增：构建待渲染的股票列表，并根据排序规则排序
+        let displayList = [...configData.stocks];
+        
+        if (sortField) {
+            displayList.sort((codeA, codeB) => {
+                const infoA = marketDataMap.get(codeA);
+                const infoB = marketDataMap.get(codeB);
+                
+                // 如果数据缺失，排在后面
+                if (!infoA && !infoB) return 0;
+                if (!infoA) return 1;
+                if (!infoB) return -1;
+
+                let valA = infoA[sortField];
+                let valB = infoB[sortField];
+
+                // 特殊处理：如果是字符串类型（如 name, symbol），使用 localeCompare
+                if (typeof valA === 'string') {
+                    return sortOrder === 'asc' 
+                        ? valA.localeCompare(valB, 'zh-CN') 
+                        : valB.localeCompare(valA, 'zh-CN');
+                }
+                
+                // 数值类型比较
+                if (sortOrder === 'asc') {
+                    return valA - valB;
+                } else {
+                    return valB - valA;
+                }
+            });
+        }
+
+        displayList.forEach(symbol => {
             const stockInfo = marketDataMap.get(symbol);
             const tr = document.createElement('tr');
             tr.className = 'draggable-row'; // 添加拖拽类
