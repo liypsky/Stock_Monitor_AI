@@ -76,6 +76,19 @@ pub struct KLineDataPoint {
     pub amount: f64,    // 元
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiConfig {
+    pub id: String,
+    pub name: String,
+    pub config_type: String,
+    pub api_url: String,
+    pub api_key: String,
+    pub main_models: String,
+    pub fallback_models: String,
+    pub model: String,
+    pub timeout_seconds: u64,
+}
+
 #[derive(Clone)]
 struct AppState {
     index_list: Arc<RwLock<Vec<String>>>,
@@ -83,6 +96,7 @@ struct AppState {
     market_data: Arc<RwLock<Vec<StockInfo>>>,
     data_refresh_notify: Arc<Notify>,
     refresh_interval: Arc<RwLock<u64>>, // 新增：刷新间隔
+    ai_configs: Arc<RwLock<Vec<AiConfig>>>, // 新增：AI配置
 }
 
 static RE_SINA_DATA: LazyLock<Regex> = LazyLock::new(|| {
@@ -98,6 +112,8 @@ struct AppConfig {
     data_fetch_interval: u64, // 后端获取数据的间隔
     #[serde(default = "default_page_refresh_interval")]
     page_refresh_interval: u64, // 前端页面刷新的间隔
+    #[serde(default = "default_ai_configs")]
+    ai_configs: Vec<AiConfig>,
 }
 
 fn default_data_fetch_interval() -> u64 {
@@ -106,6 +122,10 @@ fn default_data_fetch_interval() -> u64 {
 
 fn default_page_refresh_interval() -> u64 {
     3
+}
+
+fn default_ai_configs() -> Vec<AiConfig> {
+    vec![]
 }
 
 // 新增：加载配置的辅助函数
@@ -133,7 +153,7 @@ fn load_config_from_file() -> Option<AppConfig> {
 }
 
 // 新增：保存配置的辅助函数
-fn save_config_to_file(indices: &[String], stocks: &[String], data_fetch_interval: u64, page_refresh_interval: u64) {
+fn save_config_to_file(indices: &[String], stocks: &[String], data_fetch_interval: u64, page_refresh_interval: u64, ai_configs: &[AiConfig]) {
     // 修改：确保 setting 目录存在
     let data_dir = Path::new("setting");
     if !data_dir.exists() {
@@ -148,6 +168,7 @@ fn save_config_to_file(indices: &[String], stocks: &[String], data_fetch_interva
         stocks: stocks.to_vec(),
         data_fetch_interval,
         page_refresh_interval,
+        ai_configs: ai_configs.to_vec(),
     };
 
     // 修改：配置文件路径改为 setting/config.json
@@ -187,12 +208,27 @@ async fn main() {
 
     let default_data_interval = 10;
     let default_page_interval = 3;
+    
+    // 默认 AI 配置
+    let default_ai_configs = vec![
+        AiConfig {
+            id: "default_1".to_string(),
+            name: "默认配置".to_string(),
+            config_type: "openai".to_string(),
+            api_url: "".to_string(),
+            api_key: "".to_string(),
+            main_models: "gpt-3.5-turbo".to_string(),
+            fallback_models: "".to_string(),
+            model: "gpt-3.5-turbo".to_string(),
+            timeout_seconds: 60,
+        }
+    ];
 
     // 尝试从文件加载配置，否则使用默认值
-    let (initial_indices, initial_stocks, initial_data_interval, _initial_page_interval) = if let Some(saved_config) = load_config_from_file() {
-        (saved_config.indices, saved_config.stocks, saved_config.data_fetch_interval, saved_config.page_refresh_interval)
+    let (initial_indices, initial_stocks, initial_data_interval, _initial_page_interval, initial_ai_configs) = if let Some(saved_config) = load_config_from_file() {
+        (saved_config.indices, saved_config.stocks, saved_config.data_fetch_interval, saved_config.page_refresh_interval, saved_config.ai_configs)
     } else {
-        (default_indices, default_stocks, default_data_interval, default_page_interval)
+        (default_indices, default_stocks, default_data_interval, default_page_interval, default_ai_configs)
     };
 
     let notify = Arc::new(Notify::new());
@@ -203,6 +239,7 @@ async fn main() {
         market_data: Arc::new(RwLock::new(vec![])),
         data_refresh_notify: notify.clone(),
         refresh_interval: Arc::new(RwLock::new(initial_data_interval)), // 初始化刷新间隔
+        ai_configs: Arc::new(RwLock::new(initial_ai_configs)), // 初始化 AI 配置
     };
 
     let state_clone = state.clone();
@@ -224,6 +261,8 @@ async fn main() {
         .route("/api/stock_money_flow", get(get_stock_money_flow))
         .route("/api/stock_minute_data", get(get_stock_minute_data))
         .route("/api/stock_kline_data", get(get_stock_kline_data)) // 新增路由
+        .route("/api/ai_config", get(get_ai_config)) // 新增：获取AI配置
+        .route("/api/update_ai_config", post(update_ai_config)) // 新增：更新AI配置
         .nest_service("/", ServeDir::new("static"))
         .with_state(state);
 
@@ -289,7 +328,8 @@ async fn update_config(
     // 持久化保存
     let indices = state.index_list.read().await.clone();
     let stocks = state.stock_list.read().await.clone();
-    save_config_to_file(&indices, &stocks, updated_data_interval, updated_page_interval);
+    let ai_configs = state.ai_configs.read().await.clone();
+    save_config_to_file(&indices, &stocks, updated_data_interval, updated_page_interval, &ai_configs);
     
     println!("✅ Config updated: data_fetch={}s, page_refresh={}s", updated_data_interval, updated_page_interval);
     return Json(json!({"status": "success"}));
@@ -608,10 +648,10 @@ async fn add_stock(
             let indices = state.index_list.read().await.clone();
             let stocks = list.clone();
             let data_interval = state.refresh_interval.read().await.clone();
-            // 获取当前的 page_interval
             let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
+            let ai_configs = state.ai_configs.read().await.clone();
             drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks, data_interval, page_interval);
+            save_config_to_file(&indices, &stocks, data_interval, page_interval, &ai_configs);
             
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "added", "code": normalized_code}));
@@ -642,8 +682,9 @@ async fn remove_stock(
             let stocks = list.clone();
             let data_interval = state.refresh_interval.read().await.clone();
             let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
+            let ai_configs = state.ai_configs.read().await.clone();
             drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks, data_interval, page_interval);
+            save_config_to_file(&indices, &stocks, data_interval, page_interval, &ai_configs);
             
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "removed"}));
@@ -673,10 +714,11 @@ async fn reorder_stocks(
         let indices = state.index_list.read().await.clone();
         let data_interval = state.refresh_interval.read().await.clone();
         let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
+        let ai_configs = state.ai_configs.read().await.clone();
         drop(list); // 释放写锁
         
         // 确保写入文件
-        save_config_to_file(&indices, &new_codes, data_interval, page_interval);
+        save_config_to_file(&indices, &new_codes, data_interval, page_interval, &ai_configs);
         
         state.data_refresh_notify.notify_one();
         return Json(json!({"status": "success"}));
@@ -720,8 +762,9 @@ async fn add_index(
             let indices = list.clone();
             let data_interval = state.refresh_interval.read().await.clone();
             let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
+            let ai_configs = state.ai_configs.read().await.clone();
             drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks, data_interval, page_interval);
+            save_config_to_file(&indices, &stocks, data_interval, page_interval, &ai_configs);
             
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "added"}));
@@ -748,8 +791,9 @@ async fn remove_index(
             let indices = list.clone();
             let data_interval = state.refresh_interval.read().await.clone();
             let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
+            let ai_configs = state.ai_configs.read().await.clone();
             drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks, data_interval, page_interval);
+            save_config_to_file(&indices, &stocks, data_interval, page_interval, &ai_configs);
             
             state.data_refresh_notify.notify_one();
             return Json(json!({"status": "success", "msg": "removed"}));
@@ -776,130 +820,132 @@ async fn fetch_realtime_data(state: AppState, notify: Arc<Notify>) {
                 "Accept",
                 reqwest::header::HeaderValue::from_static("*/*")
             );
-            headers.insert(
-                "Accept-Language",
-                reqwest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8")
-            );
             headers
         })
         .timeout(std::time::Duration::from_secs(10))
-        .pool_max_idle_per_host(0) 
-        .http1_only() // 新增：强制使用 HTTP/1.1，避免 HTTP/2 被拦截
+        .http1_only() // 新增：强制 HTTP/1.1
         .build()
-        .unwrap_or_else(|e| {
-            eprintln!("❌ Failed to build HTTP client: {}", e);
-            reqwest::Client::new()
-        });
+        .unwrap_or_else(|_| reqwest::Client::new());
 
     loop {
-        // 动态获取刷新间隔 (数据获取间隔)
-        let interval_secs = {
-            let interval = state.refresh_interval.read().await;
-            *interval
-        };
-        
-        tokio::select! {
-            _ = notify.notified() => {}
-            _ = tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)) => {}
-        }
-        
         let indices = state.index_list.read().await.clone();
         let stocks = state.stock_list.read().await.clone();
+
         let mut all_codes = indices.clone();
-        all_codes.extend(stocks.clone());
-        
-        if all_codes.is_empty() { 
-            continue; 
-        }
+        all_codes.extend(stocks.iter().cloned());
 
-        let url = format!("http://hq.sinajs.cn/list={}", all_codes.join(","));
-        
-        // 新增：增加重试逻辑，最多重试2次
-        let mut retries = 2;
-        let mut success = false;
+        let mut market_data = vec![];
 
-        while retries >= 0 && !success {
+        for code in all_codes {
+            let url = format!("http://hq.sinajs.cn/list={}", code);
+
             match client.get(&url).send().await {
                 Ok(resp) => {
                     if !resp.status().is_success() {
-                        eprintln!("❌ HTTP Error: {} for URL: {}", resp.status(), url);
-                        // 如果是 403，可能是 IP 被封或 Header 不足，尝试等待更长时间或记录警告
-                        if resp.status() == 403 {
-                            eprintln!("⚠️ 403 Forbidden. Sina might be blocking this IP or request pattern.");
-                        }
-                        // 如果是 403 或 404，重试通常无效，但为了稳健性仍重试一次
-                        if resp.status().is_client_error() {
-                             // 对于 403，短暂等待后重试，也许能恢复
-                             if resp.status() == 403 && retries > 0 {
-                                 retries -= 1;
-                                 tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-                                 continue;
-                             }
-                             break;
-                        }
-                        retries -= 1;
-                        if retries >= 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            continue;
-                        }
-                    } else {
-                        match resp.bytes().await {
-                            Ok(bytes) => {
-                                let (text, _, _) = GBK.decode(&bytes);
-                                let parsed = parse_sina_data(&text);
+                        eprintln!("❌ Fetch HTTP Error: {} for {}", resp.status(), code);
+                        continue;
+                    }
+                    if let Ok(bytes) = resp.bytes().await {
+                        let (text, _, _) = GBK.decode(&bytes);
+                        if let Some(cap) = RE_SINA_DATA.captures(&text) {
+                            let data_str = &cap[2];
+                            let parts: Vec<&str> = data_str.split(',').collect();
+                            if parts.len() > 30 {
+                                let price = parts[3].parse::<f64>().unwrap_or(0.0);
+                                let pre_close = parts[2].parse::<f64>().unwrap_or(0.0);
+                                let open = parts[1].parse::<f64>().unwrap_or(0.0);
+                                let high = parts[4].parse::<f64>().unwrap_or(0.0);
+                                let low = parts[5].parse::<f64>().unwrap_or(0.0);
+                                let volume = parts[8].parse::<f64>().unwrap_or(0.0); // 股数
+                                let amount = parts[9].parse::<f64>().unwrap_or(0.0); // 成交额
                                 
-                                // 只有解析到数据时才更新缓存，避免空数据覆盖有效数据
-                                if !parsed.is_empty() {
-                                    let mut cache = state.market_data.write().await;
-                                    *cache = parsed;
-                                    success = true;
-                                } else {
-                                    eprintln!("⚠️ Parsed data is empty for URL: {}", url);
-                                    retries -= 1;
-                                    if retries >= 0 {
-                                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                                        continue;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("❌ Failed to read response bytes: {}", e);
-                                retries -= 1;
-                                if retries >= 0 {
-                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                                    continue;
-                                }
+                                // 计算涨跌停价 (A股通常10%，ST 5%，科创板/创业板 20%，这里简化处理)
+                                let limit_up = pre_close * 1.1;
+                                let limit_down = pre_close * 0.9;
+                                
+                                let change_percent = if pre_close > 0.0 { ((price - pre_close) / pre_close) * 100.0 } else { 0.0 };
+
+                                market_data.push(StockInfo {
+                                    symbol: code,
+                                    name: parts[0].to_string(),
+                                    price,
+                                    change_percent,
+                                    high,
+                                    low,
+                                    volume,
+                                    open,
+                                    pre_close,
+                                    limit_up,
+                                    limit_down,
+                                    amount,
+                                    turnover_rate: 0.0,
+                                    pe_ratio: 0.0,
+                                });
                             }
                         }
                     }
                 }
-                Err(e) => {
-                    // 修改：更详细的错误日志，帮助诊断 Connection refused
-                    eprintln!("❌ Fetch error (Attempt {}): {:?} for URL: {}", 2 - retries, e, url);
-                    
-                    // 如果是连接拒绝或超时，等待后重试
-                    if e.is_timeout() || e.is_connect() {
-                        retries -= 1;
-                        if retries >= 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            continue;
-                        }
-                    } else {
-                        // 其他错误也重试，但间隔稍短
-                        retries -= 1;
-                        if retries >= 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            continue;
-                        }
+                Err(e) => eprintln!("Fetch error: {}", e),
+            }
+        }
+
+        {
+            let mut data = state.market_data.write().await;
+            *data = market_data;
+        }
+
+        notify.notify_one();
+
+        let interval = state.refresh_interval.read().await.clone();
+        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+    }
+}
+
+// 新增：获取 AI 配置
+async fn get_ai_config(State(state): State<AppState>) -> Json<Value> {
+    let configs = state.ai_configs.read().await.clone();
+    Json(json!({
+        "status": "success",
+        "data": configs
+    }))
+}
+
+// 新增：更新 AI 配置
+async fn update_ai_config(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    if let Some(new_configs_val) = payload.get("ai_configs") {
+        if let Some(new_configs) = new_configs_val.as_array() {
+            let parsed_configs: Result<Vec<AiConfig>, _> = new_configs.iter().map(|v| {
+                serde_json::from_value(v.clone())
+            }).collect();
+
+            match parsed_configs {
+                Ok(configs) => {
+                    // 更新内存状态
+                    {
+                        let mut ai_state = state.ai_configs.write().await;
+                        *ai_state = configs.clone();
                     }
+                    
+                    // 持久化保存
+                    let indices = state.index_list.read().await.clone();
+                    let stocks = state.stock_list.read().await.clone();
+                    let data_interval = state.refresh_interval.read().await.clone();
+                    let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
+                    
+                    save_config_to_file(&indices, &stocks, data_interval, page_interval, &configs);
+                    
+                    return Json(json!({"status": "success"}));
+                },
+                Err(e) => {
+                    return Json(json!({"status": "error", "msg": format!("Invalid config format: {}", e)}));
                 }
             }
         }
-        
-        if !success {
-            eprintln!("❌ Failed to fetch data after all retries");
-        }
     }
+    Json(json!({"status": "error", "msg": "Invalid payload"}))
 }
 
 async fn get_stock_minute_data(
