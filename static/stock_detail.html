@@ -16,11 +16,11 @@
         .flat { color: #7f8c8d; } /* 平盘 */
 
         /* 第一行：头部信息 */
-        .header-info { display: flex; align-items: baseline; gap: 15px; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 15px; }
+        .header-info { display: flex; align-items: center; gap: 15px; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 15px; justify-content: space-between; }
         .stock-name { font-size: 24px; font-weight: bold; }
-        .stock-code { font-size: 16px; color: #7f8c8d; }
+        .stock-code { font-size: 16px; color: #7f8c8d; margin-left: 10px; }
         .current-price { font-size: 32px; font-weight: bold; }
-        .change-percent { font-size: 18px; font-weight: bold; }
+        .change-percent { font-size: 18px; font-weight: bold; margin-left: 10px; }
 
         /* 第二行：关键数据网格 */
         .data-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 20px; background: #f8f9fa; padding: 15px; border-radius: 6px; }
@@ -103,10 +103,14 @@
 
     <!-- 第一行：名称 / 代码 / 价格 / 涨跌 -->
     <div class="header-info">
-        <span id="stock-name" class="stock-name">--</span>
-        <span id="stock-code" class="stock-code">--</span>
-        <span id="current-price" class="current-price">--</span>
-        <span id="change-percent" class="change-percent">--</span>
+        <div style="display: flex; align-items: baseline;">
+            <span id="stock-name" class="stock-name">--</span>
+            <span id="stock-code" class="stock-code">--</span>
+        </div>
+        <div style="display: flex; align-items: baseline;">
+            <span id="current-price" class="current-price">--</span>
+            <span id="change-percent" class="change-percent">--</span>
+        </div>
     </div>
 
     <!-- 第二行：开盘 昨收 最高 最低 涨停 跌停 -->
