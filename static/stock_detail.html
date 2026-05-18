@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>个股详情</title>
+    <title>个股详情 - AI增强版</title>
     <!-- 引入 ECharts -->
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <style>
@@ -28,17 +28,72 @@
         .data-label { font-size: 12px; color: #95a5a6; margin-bottom: 5px; }
         .data-value { font-size: 16px; font-weight: 600; }
 
-        /* 第三行：标签页 */
-        .tabs { display: flex; border-bottom: 2px solid #ddd; margin-bottom: 20px; }
-        .tab-btn { padding: 10px 20px; cursor: pointer; border: none; background: none; font-size: 16px; color: #7f8c8d; transition: all 0.3s; }
-        .tab-btn.active { color: #3498db; border-bottom: 3px solid #3498db; font-weight: bold; }
-        .tab-btn:hover { color: #2980b9; }
+        /* 第三行：AI 分析标签页 */
+        .ai-tabs { display: flex; border-bottom: 2px solid #ddd; margin-bottom: 20px; background: #fff; }
+        .ai-tab-btn { 
+            padding: 12px 25px; 
+            cursor: pointer; 
+            border: none; 
+            background: none; 
+            font-size: 16px; 
+            color: #7f8c8d; 
+            transition: all 0.3s; 
+            position: relative;
+        }
+        .ai-tab-btn.active { 
+            color: #8e44ad; 
+            font-weight: bold; 
+        }
+        .ai-tab-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: -2px;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            background-color: #8e44ad;
+        }
+        .ai-tab-btn:hover { color: #8e44ad; background-color: #f9f9f9; }
+
+        /* AI 分析结果区域 */
+        #ai-analysis-container {
+            min-height: 150px;
+            padding: 20px;
+            background-color: #fdfdfd;
+            border: 1px solid #eee;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            position: relative;
+        }
+        .ai-loading {
+            text-align: center;
+            color: #8e44ad;
+            font-style: italic;
+            padding: 20px;
+        }
+        .ai-result-content {
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .ai-highlight {
+            background-color: #fff3cd;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-weight: bold;
+            color: #856404;
+        }
 
         /* 图表容器 */
         #chart-container { width: 100%; height: 500px; }
         
         .back-btn { margin-bottom: 15px; display: inline-block; text-decoration: none; color: #3498db; font-weight: bold; }
         .back-btn:hover { text-decoration: underline; }
+
+        /* 原有图表标签页样式调整，避免冲突 */
+        .chart-tabs { display: flex; border-bottom: 2px solid #ddd; margin-bottom: 20px; margin-top: 20px;}
+        .chart-tab-btn { padding: 10px 20px; cursor: pointer; border: none; background: none; font-size: 16px; color: #7f8c8d; transition: all 0.3s; }
+        .chart-tab-btn.active { color: #3498db; border-bottom: 3px solid #3498db; font-weight: bold; }
+        .chart-tab-btn:hover { color: #2980b9; }
     </style>
 </head>
 <body>
@@ -82,12 +137,24 @@
         </div>
     </div>
 
-    <!-- 第三行：标签页 -->
-    <div class="tabs">
-        <button class="tab-btn active" onclick="switchTab('minute')">分时</button>
-        <button class="tab-btn" onclick="switchTab('kday')">日K</button>
-        <button class="tab-btn" onclick="switchTab('kweek')">周K</button>
-        <button class="tab-btn" onclick="switchTab('kmonth')">月K</button>
+    <!-- 第三行：AI 分析标签页 -->
+    <div class="ai-tabs">
+        <button class="ai-tab-btn active" onclick="triggerAiAnalysis('trend')">趋势研判</button>
+        <button class="ai-tab-btn" onclick="triggerAiAnalysis('timing')">择时信号</button>
+        <button class="ai-tab-btn" onclick="triggerAiAnalysis('turning')">拐点检测</button>
+    </div>
+
+    <!-- AI 分析结果展示区 -->
+    <div id="ai-analysis-container">
+        <div class="ai-loading">点击标签开始 AI 智能分析...</div>
+    </div>
+
+    <!-- 第四行：图表标签页 -->
+    <div class="chart-tabs">
+        <button class="chart-tab-btn active" onclick="switchChartTab('minute')">分时</button>
+        <button class="chart-tab-btn" onclick="switchChartTab('kday')">日K</button>
+        <button class="chart-tab-btn" onclick="switchChartTab('kweek')">周K</button>
+        <button class="chart-tab-btn" onclick="switchChartTab('kmonth')">月K</button>
     </div>
 
     <!-- 走势图 -->
@@ -100,7 +167,8 @@
     const stockCode = urlParams.get('code');
     
     let chartInstance = null;
-    let currentTab = 'minute';
+    let currentChartTab = 'minute';
+    let aiConfigCache = null; // 缓存 AI 配置
 
     if (!stockCode) {
         alert('未指定股票代码');
@@ -110,8 +178,9 @@
     // 初始化
     async function init() {
         await fetchStockDetail();
+        await loadAiConfig(); // 预加载 AI 配置
         initChart();
-        await loadChartData(currentTab);
+        await loadChartData(currentChartTab);
         
         // 定时刷新详情数据 (每3秒)
         setInterval(fetchStockDetail, 3000);
@@ -166,6 +235,108 @@
         else el.className = 'data-value flat';
     }
 
+    // 加载 AI 配置
+    async function loadAiConfig() {
+        try {
+            const response = await fetch('/api/ai_config');
+            if (response.ok) {
+                const res = await response.json();
+                if (res.status === 'success' && res.data && res.data.length > 0) {
+                    aiConfigCache = res.data[0]; // 默认使用第一个配置
+                    console.log('AI Config loaded:', aiConfigCache);
+                }
+            }
+        } catch (error) {
+            console.error('Load AI config error:', error);
+        }
+    }
+
+    // 触发 AI 分析
+    async function triggerAiAnalysis(type) {
+        // 更新按钮样式
+        document.querySelectorAll('.ai-tab-btn').forEach(btn => btn.classList.remove('active'));
+        event.target.classList.add('active');
+
+        const container = document.getElementById('ai-analysis-container');
+        container.innerHTML = '<div class="ai-loading">正在连接 AI 分析师，整理数据中...</div>';
+
+        try {
+            // 1. 并行获取所需数据
+            const [detailRes, moneyFlowRes, minuteRes, klineRes] = await Promise.all([
+                fetch(`/api/stock_detail?code=${stockCode}`).then(r => r.json()),
+                fetch(`/api/stock_money_flow?code=${stockCode}`).then(r => r.json()),
+                fetch(`/api/stock_minute_data?code=${stockCode}&datalen=240`).then(r => r.json()),
+                fetch(`/api/stock_kline_data?code=${stockCode}&type=kday`).then(r => r.json())
+            ]);
+
+            // 2. 组装 Context
+            const contextData = {
+                stock_info: detailRes.status === 'success' ? detailRes.data : null,
+                money_flow: moneyFlowRes.status === 'success' ? moneyFlowRes.data : null,
+                minute_data: minuteRes.status === 'success' ? minuteRes.data.slice(-10) : [], // 最近10个分时点
+                kline_data: klineRes.status === 'success' ? klineRes.data.slice(-10) : [],   // 最近10根K线
+                analysis_type: type
+            };
+
+            container.innerHTML = '<div class="ai-loading">数据整理完毕，正在生成分析报告...</div>';
+
+            // 3. 调用 AI 接口
+            // 注意：当前后端 /api/ai_analysis 是 GET 请求且只接受 code。
+            // 为了演示效果，这里依然调用该接口，但实际生产中应改为 POST 并发送 contextData。
+            // 如果后端已升级为 POST，请取消下面注释并使用 fetch POST 方式
+            
+            /* 
+            const aiResponse = await fetch('/api/ai_analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config: aiConfigCache,
+                    symbol: stockCode,
+                    name: document.getElementById('stock-name').innerText,
+                    context: JSON.stringify(contextData)
+                })
+            });
+            */
+            
+            // 模拟调用 (兼容当前后端 GET 接口)
+            const aiResponse = await fetch(`/api/ai_analysis?code=${stockCode}`);
+            
+            if (aiResponse.ok) {
+                const aiData = await aiResponse.json();
+                if (aiData.status === 'success') {
+                    displayAiResult(aiData.analysis, type);
+                } else {
+                    container.innerHTML = `<div style="color:red;">分析失败: ${aiData.msg}</div>`;
+                }
+            } else {
+                container.innerHTML = '<div style="color:red;">网络请求失败</div>';
+            }
+
+        } catch (error) {
+            console.error('AI Analysis Error:', error);
+            container.innerHTML = '<div style="color:red;">分析过程出错，请稍后重试</div>';
+        }
+    }
+
+    // 展示 AI 结果
+    function displayAiResult(text, type) {
+        const container = document.getElementById('ai-analysis-container');
+        
+        // 简单的高亮处理：将【】内的内容高亮
+        let formattedText = text.replace(/【(.*?)】/g, '<span class="ai-highlight">【$1】</span>');
+        
+        // 根据类型添加标题
+        let title = '';
+        if (type === 'trend') title = '📈 趋势研判报告';
+        else if (type === 'timing') title = '⏱️ 择时信号建议';
+        else if (type === 'turning') title = '🔄 拐点检测报告';
+
+        container.innerHTML = `
+            <div style="font-weight:bold; margin-bottom:10px; color:#8e44ad;">${title}</div>
+            <div class="ai-result-content">${formattedText}</div>
+        `;
+    }
+
     // 初始化图表
     function initChart() {
         const chartDom = document.getElementById('chart-container');
@@ -173,11 +344,11 @@
         window.addEventListener('resize', () => chartInstance.resize());
     }
 
-    // 切换标签
-    function switchTab(type) {
-        currentTab = type;
+    // 切换图表标签
+    function switchChartTab(type) {
+        currentChartTab = type;
         // 更新按钮样式
-        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+        document.querySelectorAll('.chart-tab-btn').forEach(btn => btn.classList.remove('active'));
         event.target.classList.add('active');
         
         loadChartData(type);
@@ -216,11 +387,7 @@
 
         if (type === 'minute') {
             // 分时图逻辑
-            // 需求：X轴显示为 HH:mm 格式 (如 11:30)
-            
-            // 1. 数据处理：后端已返回 HH:mm 格式，直接使用
             const times = data.map(item => item.time);
-            
             const prices = data.map(item => item.price);
             const avgPrices = data.map(item => item.avg_price);
             
@@ -228,7 +395,6 @@
                 tooltip: { 
                     trigger: 'axis',
                     formatter: function (params) {
-                        // 自定义提示框，显示具体时间
                         let res = params[0].name + '<br/>';
                         params.forEach(p => {
                             res += p.marker + p.seriesName + ': ' + p.value.toFixed(2) + '<br/>';
@@ -241,12 +407,7 @@
                     type: 'category', 
                     data: times, 
                     boundaryGap: false,
-                    axisLabel: {
-                        // 直接显示原始数据 (即 HH:mm)
-                        formatter: '{value}',
-                        rotate: 0,
-                        interval: 'auto' // 自动间隔防止重叠
-                    }
+                    axisLabel: { formatter: '{value}', rotate: 0, interval: 'auto' }
                 },
                 yAxis: { 
                     type: 'value', 
@@ -259,9 +420,7 @@
                 ]
             };
         } else {
-            // K线图逻辑 (日K, 周K, 月K)
-            // 需求：X轴显示为 05-18 格式，默认显示90条数据
-            
+            // K线图逻辑
             const dates = data.map(item => item.date);
             const values = data.map(item => [item.open, item.close, item.low, item.high]);
             const volumes = data.map((item, index) => [index, item.volume, item.close > item.open ? 1 : -1]);
@@ -284,9 +443,8 @@
                         max: 'dataMax',
                         axisLabel: {
                             formatter: function (value) {
-                                // 将 YYYY-MM-DD 转换为 MM-DD
                                 if (value && value.length >= 10) {
-                                    return value.substring(5); // 截取后5位 MM-DD
+                                    return value.substring(5);
                                 }
                                 return value;
                             }
@@ -309,7 +467,6 @@
                     { scale: true, splitArea: { show: true } },
                     { scale: true, gridIndex: 1, splitNumber: 2, axisLabel: { show: false }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false } }
                 ],
-                // 修改：默认展示全部数据 (start: 0, end: 100)，因为后端已限制返回90条，符合需求
                 dataZoom: [
                     { type: 'inside', start: 0, end: 100 }, 
                     { show: true, type: 'slider', top: '90%', start: 0, end: 100 }
