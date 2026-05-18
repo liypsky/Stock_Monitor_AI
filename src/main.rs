@@ -704,6 +704,87 @@ async fn remove_stock(
     Json(json!({"status": "error", "msg": "invalid payload"}))
 }
 
+// 新增：添加指数
+async fn add_index(
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> Json<Value> {
+    if let Some(code) = params.get("code") {
+        // 指数代码通常已经是 sh/sz/bj 格式，或者需要简单标准化
+        let normalized_code = if code.starts_with("sh") || code.starts_with("sz") || code.starts_with("bj") {
+            code.to_lowercase()
+        } else {
+            // 默认假设是上海或深圳，根据常见指数代码前缀判断，这里简化处理，直接使用前缀或默认sh
+            if code.starts_with("0") || code.starts_with("3") || code.starts_with("1") || code.starts_with("2") {
+                 format!("sz{}", code.to_lowercase())
+            } else {
+                 format!("sh{}", code.to_lowercase())
+            }
+        };
+
+        let mut list = state.index_list.write().await;
+        
+        if !list.contains(&normalized_code) {
+            list.push(normalized_code.clone());
+            println!("✅ Backend: Added index {}", normalized_code);
+            
+            // 保存配置
+            let indices = list.clone();
+            let stocks = state.stock_list.read().await.clone();
+            let data_interval = state.refresh_interval.read().await.clone();
+            let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
+            let ai_configs = state.ai_configs.read().await.clone();
+            drop(list); // 释放写锁
+            save_config_to_file(&indices, &stocks, data_interval, page_interval, &ai_configs);
+            
+            state.data_refresh_notify.notify_one();
+            return Json(json!({"status": "success", "msg": "added", "code": normalized_code}));
+        }
+        state.data_refresh_notify.notify_one();
+        return Json(json!({"status": "exists", "msg": "already exists"}));
+    }
+    Json(json!({"status": "error", "msg": "no code"}))
+}
+
+// 新增：删除指数
+#[axum::debug_handler]
+async fn remove_index(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    if let Some(code) = payload.get("code").and_then(|c| c.as_str()) {
+        let normalized_code = if code.starts_with("sh") || code.starts_with("sz") || code.starts_with("bj") {
+            code.to_lowercase()
+        } else {
+             if code.starts_with("0") || code.starts_with("3") || code.starts_with("1") || code.starts_with("2") {
+                 format!("sz{}", code.to_lowercase())
+            } else {
+                 format!("sh{}", code.to_lowercase())
+            }
+        };
+
+        let mut list = state.index_list.write().await;
+        if let Some(pos) = list.iter().position(|x| x == &normalized_code) {
+            list.remove(pos);
+            println!("✅ Backend: Removed index {}", normalized_code);
+            
+            // 保存配置
+            let indices = list.clone();
+            let stocks = state.stock_list.read().await.clone();
+            let data_interval = state.refresh_interval.read().await.clone();
+            let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
+            let ai_configs = state.ai_configs.read().await.clone();
+            drop(list); // 释放写锁
+            save_config_to_file(&indices, &stocks, data_interval, page_interval, &ai_configs);
+            
+            state.data_refresh_notify.notify_one();
+            return Json(json!({"status": "success", "msg": "removed"}));
+        }
+        return Json(json!({"status": "error", "msg": "not found"}));
+    }
+    Json(json!({"status": "error", "msg": "invalid payload"}))
+}
+
 #[axum::debug_handler]
 async fn reorder_stocks(
     State(state): State<AppState>, // State 放在前面
@@ -736,81 +817,409 @@ async fn reorder_stocks(
     Json(json!({"status": "error", "msg": "invalid payload"}))
 }
 
+// 新增：AI 请求结构体，用于接收前端传来的上下文或直接由后端构建
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiAnalysisRequest {
+    pub code: String,
+    #[serde(default)]
+    pub analysis_type: String, // trend, timing, turning
+}
+
+// 新增：AI 响应结构体，包含分析结果和建议方向
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiAnalysisResponse {
+    pub status: String,
+    pub analysis: String,
+    #[serde(default)]
+    pub sentiment: String, // "bullish", "bearish", "neutral"
+}
+
+// 新增：调用大模型的核心函数
+async fn call_llm_api(config: &AiConfig, prompt: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(config.timeout_seconds))
+        .build()
+        .map_err(|e| format!("Failed to build client: {}", e))?;
+
+    // 构建请求 Body，兼容 OpenAI 格式
+    let request_body = json!({
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": "你是一个专业的A股金融分析师。请根据提供的数据进行分析。输出格式要求：先给出结论（看多/看空/震荡），然后给出详细理由。如果在结论中包含'看多'或'买入'，请在开头标记[BULLISH]；如果包含'看空'或'卖出'，标记[BEARISH]；否则标记[NEUTRAL]。"}
+            , {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7
+    });
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("Content-Type", "application/json".parse().unwrap());
+    if !config.api_key.is_empty() {
+        headers.insert("Authorization", format!("Bearer {}", config.api_key).parse().unwrap());
+    }
+
+    let resp = client.post(&config.api_url)
+        .headers(headers)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("API Error {}: {}", status, text));
+    }
+
+    let json_resp: Value = resp.json().await.map_err(|e| format!("Parse response failed: {}", e))?;
+    
+    // 解析 OpenAI 格式响应
+    if let Some(choices) = json_resp.get("choices") {
+        if let Some(first_choice) = choices.as_array().and_then(|arr| arr.first()) {
+            if let Some(message) = first_choice.get("message") {
+                if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                    return Ok(content.to_string());
+                }
+            }
+        }
+    }
+    
+    Err("Invalid response format from LLM".to_string())
+}
+
+// 新增：调用大模型的核心函数，支持指定模型名称
+async fn call_llm_api_with_model(config: &AiConfig, prompt: &str, model_name: &str) -> Result<String, String> {
+    // 修改：确保超时时间至少为60秒，如果配置中为0或未设置
+    let timeout_secs = if config.timeout_seconds > 0 { config.timeout_seconds } else { 60 };
+    
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(|e| format!("Failed to build client: {}", e))?;
+
+    // 构建请求 Body，兼容 OpenAI 格式
+    let request_body = json!({
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": "你是一个专业的A股金融分析师。请根据提供的数据进行分析。输出格式要求：先给出结论（看多/看空/震荡），然后给出详细理由。如果在结论中包含'看多'或'买入'，请在开头标记[BULLISH]；如果包含'看空'或'卖出'，标记[BEARISH]；否则标记[NEUTRAL]。"}
+            , {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7
+    });
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("Content-Type", "application/json".parse().unwrap());
+    if !config.api_key.is_empty() {
+        headers.insert("Authorization", format!("Bearer {}", config.api_key).parse().unwrap());
+    }
+
+    let resp = client.post(&config.api_url)
+        .headers(headers)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed for model {}: {}", model_name, e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("API Error {} for model {}: {}", status, model_name, text));
+    }
+
+    let json_resp: Value = resp.json().await.map_err(|e| format!("Parse response failed for model {}: {}", model_name, e))?;
+    
+    // 解析 OpenAI 格式响应
+    if let Some(choices) = json_resp.get("choices") {
+        if let Some(first_choice) = choices.as_array().and_then(|arr| arr.first()) {
+            if let Some(message) = first_choice.get("message") {
+                if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                    return Ok(content.to_string());
+                }
+            }
+        }
+    }
+    
+    Err(format!("Invalid response format from LLM for model {}", model_name))
+}
+
+// 新增：构建 Prompt 的辅助函数
+fn build_analysis_prompt(stock_info: &StockInfo, money_flow: Option<&MoneyFlow>, kline_data: &[KLineDataPoint], analysis_type: &str) -> String {
+    let mut prompt = format!(
+        "请分析股票 {}({}) 的走势。\n\n【基础数据】\n当前价格: {:.2}, 涨跌幅: {:.2}%, 今开: {:.2}, 最高: {:.2}, 最低: {:.2}, 昨收: {:.2}\n",
+        stock_info.name, stock_info.symbol, stock_info.price, stock_info.change_percent, 
+        stock_info.open, stock_info.high, stock_info.low, stock_info.pre_close
+    );
+
+    if let Some(mf) = money_flow {
+        prompt.push_str(&format!(
+            "\n【资金流向】\n主力净流入: {:.2}元, 超大单: {:.2}元, 大单: {:.2}元, 中单: {:.2}元, 小单: {:.2}元\n",
+            mf.main_net, mf.super_large, mf.large, mf.medium, mf.small
+        ));
+    } else {
+        prompt.push_str("\n【资金流向】\n暂无数据\n");
+    }
+
+    if !kline_data.is_empty() {
+        prompt.push_str("\n【近期K线数据 (最近5日)】\n日期, 开盘, 收盘, 最高, 最低, 成交量(手)\n");
+        for k in kline_data.iter().rev().take(5) {
+            prompt.push_str(&format!("{}, {:.2}, {:.2}, {:.2}, {:.2}, {:.0}\n", k.date, k.open, k.close, k.high, k.low, k.volume));
+        }
+    }
+
+    match analysis_type {
+        "trend" => prompt.push_str("\n【分析任务】\n请进行趋势研判。结合价格形态、均线趋势（如有）、资金流向，判断短期和中期的走势。给出明确的看多、看空或震荡观点。"),
+        "timing" => prompt.push_str("\n【分析任务】\n请提供择时信号。分析当前的买卖点，是否适合介入或离场？关注成交量变化和关键支撑压力位。"),
+        "turning" => prompt.push_str("\n【分析任务】\n请检测拐点。分析是否有见底回升或见顶回落的迹象。关注背离现象和资金异动。"),
+        _ => prompt.push_str("\n【分析任务】\n请进行综合技术分析。"),
+    }
+
+    prompt
+}
+
+// 修改：get_ai_analysis 改为 POST 以接收更多参数，或者保持 GET 但内部获取数据
+// 这里为了兼容前端现有逻辑较少改动，我们保持 GET 入口，但内部实现完整逻辑
+// 注意：原代码是 GET，我们将其逻辑重写
 async fn get_ai_analysis(
     Query(params): Query<HashMap<String, String>>,
-    _state: State<AppState>,
-) -> Json<Value> {
-    if let Some(code) = params.get("code") {
-        return Json(json!({
-            "status": "success",
-            "analysis": format!("[AI模拟] {} 近期走势震荡上行，成交量温和放大，建议关注上方压力位。技术指标显示RSI处于中性区域，短期可能有回调风险，但中长期趋势向好。", code)
-        }));
-    }
-    Json(json!({"status": "error", "msg": "no code"}))
-}
-
-async fn add_index(
-    Query(params): Query<HashMap<String, String>>,
     State(state): State<AppState>,
 ) -> Json<Value> {
-    if let Some(code) = params.get("code") {
-        // 修复：对指数代码也进行规范化处理，防止非法代码导致后续请求异常
-        let normalized_code = normalize_stock_code(code);
-        let mut list = state.index_list.write().await;
-        
-        // 限制最多8个
-        if list.len() >= 8 && !list.contains(&normalized_code) {
-            return Json(json!({"status": "full", "msg": "max 8 indices"}));
-        }
-        
-        if !list.contains(&normalized_code) {
-            list.push(normalized_code.clone());
-            println!("✅ Backend: Added index {}", normalized_code);
-            
-            // 保存配置
-            let stocks = state.stock_list.read().await.clone();
-            let indices = list.clone();
-            let data_interval = state.refresh_interval.read().await.clone();
-            let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
-            let ai_configs = state.ai_configs.read().await.clone();
-            drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks, data_interval, page_interval, &ai_configs);
-            
-            state.data_refresh_notify.notify_one();
-            return Json(json!({"status": "success", "msg": "added"}));
-        }
-        state.data_refresh_notify.notify_one();
-        return Json(json!({"status": "exists", "msg": "already exists"}));
+    let code = params.get("code").cloned().unwrap_or_default();
+    let analysis_type = params.get("type").cloned().unwrap_or("trend".to_string());
+
+    if code.is_empty() {
+        return Json(json!({"status": "error", "msg": "no code"}));
     }
-    Json(json!({"status": "error", "msg": "no code"}))
+
+    let normalized_code = normalize_stock_code(&code);
+
+    // 1. 获取所有 AI 配置
+    let ai_configs = state.ai_configs.read().await.clone();
+    if ai_configs.is_empty() {
+        return Json(json!({"status": "error", "msg": "No AI configs found"}));
+    }
+
+    // 2. 并行获取股票数据 (模拟前端之前的行为，但在后端完成以保证数据一致性)
+    // 获取详情
+    let stock_info_opt = fetch_stock_detail_internal(&normalized_code).await;
+    // 获取资金流
+    let money_flow_opt = fetch_money_flow_internal(&normalized_code).await;
+    // 获取K线
+    let kline_data_opt = fetch_kline_data_from_em(&normalized_code, "101", 10).await; // 取日K最近10条
+
+    if stock_info_opt.is_none() {
+        return Json(json!({"status": "error", "msg": "Failed to fetch stock info"}));
+    }
+    
+    let stock_info = stock_info_opt.unwrap();
+    let kline_data = kline_data_opt.unwrap_or_default();
+
+    // 3. 构建 Prompt
+    let prompt = build_analysis_prompt(&stock_info, money_flow_opt.as_ref(), &kline_data, &analysis_type);
+
+    // 4. 遍历所有配置和模型进行调用
+    let mut last_error = String::new();
+    let mut analysis_result = None;
+    let mut tried_count = 0;
+    let mut error_log = Vec::new();
+
+    for config in ai_configs.iter() {
+        // 解析当前配置的模型列表
+        let main_models = config.main_models.split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<&str>>();
+        
+        let fallback_models = config.fallback_models.split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<&str>>();
+
+        // 合并模型列表：主模型 + 备用模型
+        let mut all_models = main_models.clone();
+        all_models.extend(fallback_models.clone());
+
+        // 如果列表为空，使用默认 model 字段
+        if all_models.is_empty() {
+            if !config.model.is_empty() {
+                all_models.push(&config.model);
+            } else {
+                eprintln!("⚠️ Config {} has no models defined, skipping.", config.name);
+                continue;
+            }
+        }
+
+        for model_name in all_models {
+            tried_count += 1;
+            println!("🤖 Attempting AI analysis with config [{}] and model: {}", config.name, model_name);
+            match call_llm_api_with_model(config, &prompt, model_name).await {
+                Ok(text) => {
+                    analysis_result = Some(text);
+                    println!("✅ AI analysis successful with config [{}] and model: {}", config.name, model_name);
+                    break; // 成功则跳出内层循环
+                }
+                Err(e) => {
+                    eprintln!("⚠️ AI Call Error with config [{}] and model {}: {}", config.name, model_name, e);
+                    last_error = e.clone();
+                    error_log.push(format!("Config [{}], Model [{}]: {}", config.name, model_name, e));
+                    // 继续尝试下一个模型
+                }
+            }
+        }
+        
+        // 如果当前配置已经成功获取结果，跳出外层配置循环
+        if analysis_result.is_some() {
+            break;
+        }
+    }
+
+    let final_analysis = match analysis_result {
+        Some(text) => text,
+        None => {
+            let error_summary = if error_log.is_empty() { 
+                last_error 
+            } else { 
+                format!("All {} attempts failed. Errors:\n{}", tried_count, error_log.join("\n")) 
+            };
+            return Json(json!({"status": "error", "msg": format!("All AI models failed. {}", error_summary)}));
+        }
+    };
+
+    // 5. 解析情感倾向
+    let mut sentiment = "neutral".to_string();
+    let mut clean_analysis = final_analysis.clone();
+    
+    if final_analysis.contains("[BULLISH]") {
+        sentiment = "bullish".to_string();
+        clean_analysis = final_analysis.replace("[BULLISH]", "");
+    } else if final_analysis.contains("[BEARISH]") {
+        sentiment = "bearish".to_string();
+        clean_analysis = final_analysis.replace("[BEARISH]", "");
+    } else if final_analysis.contains("[NEUTRAL]") {
+        sentiment = "neutral".to_string();
+        clean_analysis = final_analysis.replace("[NEUTRAL]", "");
+    }
+
+    Json(json!({
+        "status": "success",
+        "data": {
+            "analysis": clean_analysis.trim(),
+            "sentiment": sentiment,
+            "raw_response": final_analysis // 可选，用于调试
+        }
+    }))
 }
 
-async fn remove_index(
-    State(state): State<AppState>,
-    Json(payload): Json<Value>,
-) -> Json<Value> {
-    if let Some(code) = payload.get("code").and_then(|c| c.as_str()) {
-        let normalized_code = normalize_stock_code(code);
-        let mut list = state.index_list.write().await;
-        if let Some(pos) = list.iter().position(|x| x == &normalized_code) {
-            list.remove(pos);
-            println!("✅ Backend: Removed index {}", normalized_code);
+// 新增：内部获取详情的辅助函数 (复用原有逻辑但不返回 Json)
+async fn fetch_stock_detail_internal(code: &str) -> Option<StockInfo> {
+    let client = reqwest::Client::builder()
+        .default_headers({
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert("User-Agent", reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
+            headers.insert("Referer", reqwest::header::HeaderValue::from_static("https://finance.sina.com.cn/"));
+            headers
+        })
+        .timeout(std::time::Duration::from_secs(10))
+        .http1_only()
+        .build()
+        .ok()?;
+
+    let url = format!("http://hq.sinajs.cn/list={}", code);
+    let resp = client.get(&url).send().await.ok()?;
+    let bytes = resp.bytes().await.ok()?;
+    let (text, _, _) = GBK.decode(&bytes);
+    
+    if let Some(cap) = RE_SINA_DATA.captures(&text) {
+        let data_str = &cap[2];
+        let parts: Vec<&str> = data_str.split(',').collect();
+        if parts.len() > 30 {
+            let price = parts[3].parse::<f64>().unwrap_or(0.0);
+            let pre_close = parts[2].parse::<f64>().unwrap_or(0.0);
+            let open = parts[1].parse::<f64>().unwrap_or(0.0);
+            let high = parts[4].parse::<f64>().unwrap_or(0.0);
+            let low = parts[5].parse::<f64>().unwrap_or(0.0);
+            let volume_shares = parts[8].parse::<f64>().unwrap_or(0.0);
+            let amount = parts[9].parse::<f64>().unwrap_or(0.0);
+            let change_percent = if pre_close > 0.0 { ((price - pre_close) / pre_close) * 100.0 } else { 0.0 };
             
-            // 保存配置
-            let stocks = state.stock_list.read().await.clone();
-            let indices = list.clone();
-            let data_interval = state.refresh_interval.read().await.clone();
-            let page_interval = load_config_from_file().map_or(3, |c| c.page_refresh_interval);
-            let ai_configs = state.ai_configs.read().await.clone();
-            drop(list); // 释放写锁
-            save_config_to_file(&indices, &stocks, data_interval, page_interval, &ai_configs);
-            
-            state.data_refresh_notify.notify_one();
-            return Json(json!({"status": "success", "msg": "removed"}));
+            return Some(StockInfo {
+                symbol: code.to_string(),
+                name: parts[0].to_string(),
+                price,
+                change_percent,
+                high,
+                low,
+                volume: volume_shares / 100.0,
+                open,
+                pre_close,
+                limit_up: pre_close * 1.1,
+                limit_down: pre_close * 0.9,
+                amount,
+                turnover_rate: 0.0,
+                pe_ratio: 0.0,
+            });
         }
-        return Json(json!({"status": "error", "msg": "not found"}));
     }
-    Json(json!({"status": "error", "msg": "invalid payload"}))
+    None
+}
+
+// 新增：内部获取资金流的辅助函数
+async fn fetch_money_flow_internal(code: &str) -> Option<MoneyFlow> {
+    // 简化版：只尝试 realtime 接口
+    let secid = if code.starts_with("sh") {
+        format!("1.{}", &code[2..])
+    } else if code.starts_with("sz") || code.starts_with("bj") {
+        format!("0.{}", &code[2..])
+    } else {
+        format!("0.{}", code)
+    };
+
+    let url = format!(
+        "http://push2.eastmoney.com/api/qt/stock/fflow/realtime/get?secid={}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65&ut=b2884a393a59ad64002292a3e90d46a5",
+        secid
+    );
+
+    let client = reqwest::Client::builder()
+        .default_headers({
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert("User-Agent", reqwest::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
+            headers.insert("Referer", reqwest::header::HeaderValue::from_static("http://quote.eastmoney.com/"));
+            headers.insert("Connection", reqwest::header::HeaderValue::from_static("close"));
+            headers
+        })
+        .pool_max_idle_per_host(0)
+        .http1_only()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let resp = client.get(&url).send().await.ok()?;
+    let text = resp.text().await.ok()?;
+    
+    if let Some(start_idx) = text.find('{') {
+        if let Some(end_idx) = text.rfind('}') {
+            let json_str = &text[start_idx..=end_idx];
+            if let Ok(root) = serde_json::from_str::<Value>(json_str) {
+                if let Some(data) = root.get("data") {
+                    if !data.is_null() && data.get("f62").is_some() {
+                        let main_net = data.get("f62").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let super_large = data.get("f63").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let large = data.get("f64").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let medium = data.get("f65").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let small = data.get("f66").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        
+                        return Some(MoneyFlow {
+                            main_net,
+                            super_large,
+                            large,
+                            medium,
+                            small,
+                            retail: small,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 async fn fetch_realtime_data(state: AppState, notify: Arc<Notify>) {
