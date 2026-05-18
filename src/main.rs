@@ -888,13 +888,32 @@ async fn call_llm_api(config: &AiConfig, prompt: &str) -> Result<String, String>
 
 // 新增：调用大模型的核心函数，支持指定模型名称
 async fn call_llm_api_with_model(config: &AiConfig, prompt: &str, model_name: &str) -> Result<String, String> {
-    // 修改：确保超时时间至少为60秒，如果配置中为0或未设置
+    // 修改：获取超时时间，默认为 60 秒
     let timeout_secs = if config.timeout_seconds > 0 { config.timeout_seconds } else { 60 };
     
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
         .map_err(|e| format!("Failed to build client: {}", e))?;
+
+    // 智能补全 API URL
+    // 大多数 OpenAI 兼容接口（包括 OpenRouter, Ollama OpenAI 兼容层）的聊天端点都是 /chat/completions
+    let mut final_url = config.api_url.clone();
+    if !final_url.ends_with("/chat/completions") {
+        if final_url.ends_with('/') {
+            final_url.push_str("chat/completions");
+        } else {
+            // 如果用户配置的是 https://openrouter.ai/api/v1，我们需要追加 /chat/completions
+            // 如果用户配置的是 http://localhost:11434/v1，我们需要追加 /chat/completions
+            // 简单判断：如果包含 /v1 但不以 /chat/completions 结尾，则追加
+            if final_url.contains("/v1") {
+                final_url.push_str("/chat/completions");
+            } else {
+                // 对于根路径或其他情况，也尝试追加，防止 404
+                final_url.push_str("/chat/completions");
+            }
+        }
+    }
 
     // 构建请求 Body，兼容 OpenAI 格式
     let request_body = json!({
@@ -912,7 +931,9 @@ async fn call_llm_api_with_model(config: &AiConfig, prompt: &str, model_name: &s
         headers.insert("Authorization", format!("Bearer {}", config.api_key).parse().unwrap());
     }
 
-    let resp = client.post(&config.api_url)
+    println!("🔗 Calling AI: URL={}, Model={}", final_url, model_name);
+
+    let resp = client.post(&final_url)
         .headers(headers)
         .json(&request_body)
         .send()
@@ -994,7 +1015,7 @@ async fn get_ai_analysis(
     // 1. 获取所有 AI 配置
     let ai_configs = state.ai_configs.read().await.clone();
     if ai_configs.is_empty() {
-        return Json(json!({"status": "error", "msg": "No AI configs found"}));
+        return Json(json!({"status": "error", "msg": "No AI config found"}));
     }
 
     // 2. 并行获取股票数据 (模拟前端之前的行为，但在后端完成以保证数据一致性)
@@ -1015,13 +1036,12 @@ async fn get_ai_analysis(
     // 3. 构建 Prompt
     let prompt = build_analysis_prompt(&stock_info, money_flow_opt.as_ref(), &kline_data, &analysis_type);
 
-    // 4. 遍历所有配置和模型进行调用
+    // 4. 调用 LLM - 遍历所有配置和模型
     let mut last_error = String::new();
     let mut analysis_result = None;
     let mut tried_count = 0;
-    let mut error_log = Vec::new();
 
-    for config in ai_configs.iter() {
+    for config in &ai_configs {
         // 解析当前配置的模型列表
         let main_models = config.main_models.split(',')
             .map(|s| s.trim())
@@ -1042,30 +1062,31 @@ async fn get_ai_analysis(
             if !config.model.is_empty() {
                 all_models.push(&config.model);
             } else {
-                eprintln!("⚠️ Config {} has no models defined, skipping.", config.name);
+                eprintln!("⚠️ Config {} has no models configured, skipping.", config.name);
                 continue;
             }
         }
 
+        println!("🤖 Trying AI Provider: {} with models: {:?}", config.name, all_models);
+
         for model_name in all_models {
             tried_count += 1;
-            println!("🤖 Attempting AI analysis with config [{}] and model: {}", config.name, model_name);
+            println!("🤖 Attempting AI analysis with provider [{}] model: {}", config.name, model_name);
             match call_llm_api_with_model(config, &prompt, model_name).await {
                 Ok(text) => {
                     analysis_result = Some(text);
-                    println!("✅ AI analysis successful with config [{}] and model: {}", config.name, model_name);
-                    break; // 成功则跳出内层循环
+                    println!("✅ AI analysis successful with provider [{}] model: {}", config.name, model_name);
+                    break; // 成功则跳出模型循环
                 }
                 Err(e) => {
-                    eprintln!("⚠️ AI Call Error with config [{}] and model {}: {}", config.name, model_name, e);
-                    last_error = e.clone();
-                    error_log.push(format!("Config [{}], Model [{}]: {}", config.name, model_name, e));
+                    eprintln!("⚠️ AI Call Error with provider [{}] model {}: {}", config.name, model_name, e);
+                    last_error = format!("Provider [{}] Model [{}]: {}", config.name, model_name, e);
                     // 继续尝试下一个模型
                 }
             }
         }
-        
-        // 如果当前配置已经成功获取结果，跳出外层配置循环
+
+        // 如果当前配置中已有模型成功，则跳出配置循环
         if analysis_result.is_some() {
             break;
         }
@@ -1074,12 +1095,12 @@ async fn get_ai_analysis(
     let final_analysis = match analysis_result {
         Some(text) => text,
         None => {
-            let error_summary = if error_log.is_empty() { 
-                last_error 
-            } else { 
-                format!("All {} attempts failed. Errors:\n{}", tried_count, error_log.join("\n")) 
+            let err_msg = if tried_count == 0 {
+                "No valid models found in any configuration".to_string()
+            } else {
+                format!("All AI providers and models failed. Last error: {}", last_error)
             };
-            return Json(json!({"status": "error", "msg": format!("All AI models failed. {}", error_summary)}));
+            return Json(json!({"status": "error", "msg": err_msg}));
         }
     };
 

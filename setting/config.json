@@ -38,9 +38,9 @@
       "type": "openrouter",
       "apiUrl": "https://openrouter.ai/api/v1",
       "apiKey": "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",
-      "mainModels": "qwen/qwen3-coder:free,minimax/minimax-m2.5:free",
+      "mainModels": "openrouter/free",
       "fallbackModels": "openrouter/free",
-      "model": "qwen/qwen3-coder:free",
+      "model": "openrouter/free",
       "timeoutSeconds": 60
     }
   ]
