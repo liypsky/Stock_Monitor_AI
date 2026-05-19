@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>A股实时监控</title>
-    <!-- 引入 SortableJS -->
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <!-- 引入 SortableJS (替换为阿里云 CDN 以加速国内访问) -->
+    <script src="https://cdn.bootcdn.net/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f9; margin: 0; padding: 20px; color: #333; }
         .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
@@ -15,7 +15,8 @@
         .indices-section { margin-bottom: 20px; padding: 15px; background-color: #eef2f7; border-radius: 6px; border-left: 5px solid #3498db; }
         .indices-title { font-weight: bold; margin-bottom: 10px; color: #2980b9; }
         .indices-list { display: flex; flex-wrap: wrap; gap: 15px; }
-        .index-item { background: white; padding: 8px 15px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 120px; text-align: center; }
+        .index-item { background: white; padding: 8px 15px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 120px; text-align: center; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
+        .index-item:hover { transform: translateY(-2px); box-shadow: 0 4px 6px rgba(0,0,0,0.15); }
         .index-name { font-size: 0.9em; color: #7f8c8d; display: block; margin-bottom: 4px; }
         .index-change { font-weight: bold; font-size: 1.1em; }
         .up { color: #e74c3c; } /* 红色涨 */
@@ -262,18 +263,28 @@
             const stockInfo = marketDataMap.get(symbol);
             const div = document.createElement('div');
             div.className = 'index-item';
+            
+            // 新增：添加点击事件，跳转到详情页
+            div.onclick = () => showDetail(symbol);
 
             if (stockInfo) {
                 const changeClass = stockInfo.change_percent > 0 ? 'up' : (stockInfo.change_percent < 0 ? 'down' : 'flat');
                 const changeSign = stockInfo.change_percent > 0 ? '+' : '';
                 
+                // 修改：增加当前价格显示，并添加颜色标识
                 div.innerHTML = `
                     <span class="index-name">${stockInfo.name}</span>
+                    <div style="margin: 5px 0;">
+                        <span class="${changeClass}" style="font-size: 1.2em; font-weight: bold;">${stockInfo.price.toFixed(2)}</span>
+                    </div>
                     <span class="index-change ${changeClass}">${changeSign}${stockInfo.change_percent.toFixed(2)}%</span>
                 `;
             } else {
                 div.innerHTML = `
                     <span class="index-name">${symbol}</span>
+                    <div style="margin: 5px 0;">
+                        <span style="font-size: 1.2em; font-weight: bold;">--</span>
+                    </div>
                     <span class="index-change flat">--</span>
                 `;
             }
@@ -336,7 +347,7 @@
                 tr.innerHTML = `
                     <td>${stockInfo.symbol}</td>
                     <td>${stockInfo.name}</td>
-                    <td>${stockInfo.price.toFixed(2)}</td>
+                    <td class="${changeClass}">${stockInfo.price.toFixed(2)}</td>
                     <td class="${changeClass}">${changeSign}${stockInfo.change_percent.toFixed(2)}%</td>
                     <td>${stockInfo.high.toFixed(2)}</td>
                     <td>${stockInfo.low.toFixed(2)}</td>

@@ -17,7 +17,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::fs;
-use chrono::{Local, Datelike, Timelike};
+use chrono::Datelike;
+use chrono::Timelike;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockInfo {
@@ -62,6 +63,8 @@ pub struct MinuteDataPoint {
     pub volume: f64,
     pub open: f64,
     pub close: f64,
+    #[serde(default)]
+    pub amount: f64, // 新增：成交额(元)
 }
 
 // 新增：K线数据结构
@@ -95,6 +98,19 @@ pub struct AiConfig {
     pub timeout_seconds: u64,
 }
 
+// 新增：缓存条目结构
+#[derive(Debug, Clone)]
+struct CacheEntry<T> {
+    data: T,
+    timestamp: std::time::Instant,
+}
+
+// 新增：缓存类型定义
+type DetailCache = Arc<RwLock<HashMap<String, CacheEntry<StockInfo>>>>;
+type MoneyFlowCache = Arc<RwLock<HashMap<String, CacheEntry<MoneyFlow>>>>;
+type MinuteDataCache = Arc<RwLock<HashMap<String, CacheEntry<Vec<MinuteDataPoint>>>>>;
+type KLineDataCache = Arc<RwLock<HashMap<String, CacheEntry<Vec<KLineDataPoint>>>>>;
+
 #[derive(Clone)]
 struct AppState {
     index_list: Arc<RwLock<Vec<String>>>,
@@ -103,6 +119,11 @@ struct AppState {
     data_refresh_notify: Arc<Notify>,
     refresh_interval: Arc<RwLock<u64>>, // 新增：刷新间隔
     ai_configs: Arc<RwLock<Vec<AiConfig>>>, // 新增：AI配置
+    // 新增：缓存字段
+    detail_cache: DetailCache,
+    money_flow_cache: MoneyFlowCache,
+    minute_data_cache: MinuteDataCache,
+    kline_data_cache: KLineDataCache,
 }
 
 static RE_SINA_DATA: LazyLock<Regex> = LazyLock::new(|| {
@@ -250,6 +271,11 @@ async fn main() {
         data_refresh_notify: notify.clone(),
         refresh_interval: Arc::new(RwLock::new(initial_data_interval)), // 初始化刷新间隔
         ai_configs: Arc::new(RwLock::new(initial_ai_configs)), // 初始化 AI 配置
+        // 新增：初始化缓存
+        detail_cache: Arc::new(RwLock::new(HashMap::new())),
+        money_flow_cache: Arc::new(RwLock::new(HashMap::new())),
+        minute_data_cache: Arc::new(RwLock::new(HashMap::new())),
+        kline_data_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
     let state_clone = state.clone();
@@ -349,14 +375,43 @@ async fn get_market_data(State(state): State<AppState>) -> Json<Vec<StockInfo>> 
     Json(state.market_data.read().await.clone())
 }
 
-// 新增：获取个股详情
+// 新增：获取个股详情 (带缓存)
 async fn get_stock_detail(
     Query(params): Query<HashMap<String, String>>,
-    _state: State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<Value> {
     if let Some(code) = params.get("code") {
         let normalized_code = normalize_stock_code(code);
         
+        // 1. 尝试从缓存获取 (有效期 60 秒)
+        {
+            let cache = state.detail_cache.read().await;
+            if let Some(entry) = cache.get(&normalized_code) {
+                if entry.timestamp.elapsed().as_secs() < 60 {
+                    // 缓存命中
+                    return Json(json!({
+                        "status": "success",
+                        "data": {
+                            "symbol": entry.data.symbol,
+                            "name": entry.data.name,
+                            "price": entry.data.price,
+                            "pre_close": entry.data.pre_close,
+                            "open": entry.data.open,
+                            "high": entry.data.high,
+                            "low": entry.data.low,
+                            "volume": entry.data.volume,
+                            "amount": entry.data.amount,
+                            "limit_up": entry.data.limit_up,
+                            "limit_down": entry.data.limit_down,
+                            "change_percent": entry.data.change_percent
+                        },
+                        "cached": true
+                    }));
+                }
+            }
+        }
+
+        // 2. 缓存未命中或过期，从网络获取
         // 修改：构建专用 Client，强制 HTTP/1.1 并增强 Header
         let client = reqwest::Client::builder()
             .default_headers({
@@ -408,22 +463,49 @@ async fn get_stock_detail(
                             
                             let change_percent = if pre_close > 0.0 { ((price - pre_close) / pre_close) * 100.0 } else { 0.0 };
 
+                            let stock_info = StockInfo {
+                                symbol: normalized_code.clone(),
+                                name: parts[0].to_string(),
+                                price,
+                                pre_close,
+                                open,
+                                high,
+                                low,
+                                volume: volume / 100.0, // 转换为手
+                                amount,
+                                limit_up,
+                                limit_down,
+                                change_percent,
+                                turnover_rate: 0.0,
+                                pe_ratio: 0.0,
+                            };
+
+                            // 3. 更新缓存
+                            {
+                                let mut cache = state.detail_cache.write().await;
+                                cache.insert(normalized_code.clone(), CacheEntry {
+                                    data: stock_info.clone(),
+                                    timestamp: std::time::Instant::now(),
+                                });
+                            }
+
                             return Json(json!({
                                 "status": "success",
                                 "data": {
-                                    "symbol": normalized_code,
-                                    "name": parts[0],
-                                    "price": price,
-                                    "pre_close": pre_close,
-                                    "open": open,
-                                    "high": high,
-                                    "low": low,
-                                    "volume": volume,
-                                    "amount": amount,
-                                    "limit_up": limit_up,
-                                    "limit_down": limit_down,
-                                    "change_percent": change_percent
-                                }
+                                    "symbol": stock_info.symbol,
+                                    "name": stock_info.name,
+                                    "price": stock_info.price,
+                                    "pre_close": stock_info.pre_close,
+                                    "open": stock_info.open,
+                                    "high": stock_info.high,
+                                    "low": stock_info.low,
+                                    "volume": stock_info.volume,
+                                    "amount": stock_info.amount,
+                                    "limit_up": stock_info.limit_up,
+                                    "limit_down": stock_info.limit_down,
+                                    "change_percent": stock_info.change_percent
+                                },
+                                "cached": false
                             }));
                         }
                     }
@@ -435,14 +517,28 @@ async fn get_stock_detail(
     Json(json!({"status": "error", "msg": "fetch failed"}))
 }
 
-// 新增：获取资金流向 (对接东方财富接口)
+// 新增：获取资金流向 (带缓存)
 async fn get_stock_money_flow(
     Query(params): Query<HashMap<String, String>>,
-    _state: State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<Value> {
     if let Some(code) = params.get("code") {
         let normalized_code = normalize_stock_code(code);
         
+        // 1. 尝试从缓存获取 (有效期 300 秒，资金流向变化相对较慢)
+        {
+            let cache = state.money_flow_cache.read().await;
+            if let Some(entry) = cache.get(&normalized_code) {
+                if entry.timestamp.elapsed().as_secs() < 300 {
+                    return Json(json!({
+                        "status": "success",
+                        "data": entry.data,
+                        "cached": true
+                    }));
+                }
+            }
+        }
+
         let secid = if normalized_code.starts_with("sh") {
             format!("1.{}", &normalized_code[2..])
         } else if normalized_code.starts_with("sz") {
@@ -526,19 +622,28 @@ async fn get_stock_money_flow(
                                                 let medium = data.get("f65").and_then(|v| v.as_f64()).unwrap_or(0.0);
                                                 let small = data.get("f66").and_then(|v| v.as_f64()).unwrap_or(0.0);
                                                 
-                                                // 有些 realtime 接口返回的是累计值或瞬时值，单位可能不同，这里假设单位一致(元)
-                                                // 如果数据全为0，可能是停牌或未开盘
+                                                let mf_data = MoneyFlow {
+                                                    main_net,
+                                                    super_large,
+                                                    large,
+                                                    medium,
+                                                    small,
+                                                    retail: small,
+                                                };
+
+                                                // 2. 更新缓存
+                                                {
+                                                    let mut cache = state.money_flow_cache.write().await;
+                                                    cache.insert(normalized_code.clone(), CacheEntry {
+                                                        data: mf_data.clone(),
+                                                        timestamp: std::time::Instant::now(),
+                                                    });
+                                                }
                                                 
                                                 return Json(json!({
                                                                     "status": "success",
-                                                                    "data": {
-                                                                        "main_net": main_net,
-                                                                        "super_large": super_large,
-                                                                        "large": large,
-                                                                        "medium": medium,
-                                                                        "small": small,
-                                                                        "retail": small
-                                                                    }
+                                                                    "data": mf_data,
+                                                                    "cached": false
                                                                 }));
                                             }
 
@@ -558,16 +663,28 @@ async fn get_stock_money_flow(
                                                                 
                                                                 let retail = small; 
 
+                                                                let mf_data = MoneyFlow {
+                                                                    main_net,
+                                                                    super_large,
+                                                                    large,
+                                                                    medium,
+                                                                    small,
+                                                                    retail,
+                                                                };
+
+                                                                // 2. 更新缓存
+                                                                {
+                                                                    let mut cache = state.money_flow_cache.write().await;
+                                                                    cache.insert(normalized_code.clone(), CacheEntry {
+                                                                        data: mf_data.clone(),
+                                                                        timestamp: std::time::Instant::now(),
+                                                                    });
+                                                                }
+
                                                                 return Json(json!({
                                                                     "status": "success",
-                                                                    "data": {
-                                                                        "main_net": main_net,
-                                                                        "super_large": super_large,
-                                                                        "large": large,
-                                                                        "medium": medium,
-                                                                        "small": small,
-                                                                        "retail": retail
-                                                                    }
+                                                                    "data": mf_data,
+                                                                    "cached": false
                                                                 }));
                                                             }
                                                         }
@@ -1024,7 +1141,8 @@ async fn get_ai_analysis(
     // 获取资金流
     let money_flow_opt = fetch_money_flow_internal(&normalized_code).await;
     // 获取K线
-    let kline_data_opt = fetch_kline_data_from_em(&normalized_code, "101", 10).await; // 取日K最近10条
+    // 获取K线
+    let kline_data_opt = fetch_kline_data_from_em_internal(&normalized_code, "101", 10).await; // 取日K最近10条
 
     if stock_info_opt.is_none() {
         return Json(json!({"status": "error", "msg": "Failed to fetch stock info"}));
@@ -1390,10 +1508,24 @@ async fn update_ai_config(
 
 async fn get_stock_minute_data(
     Query(params): Query<HashMap<String, String>>,
-    _state: State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<Value> {
     if let Some(code) = params.get("code") {
         let normalized_code = normalize_stock_code(code);
+        
+        // 1. 尝试从缓存获取 (有效期 10 秒，分时图需要较高实时性，但也要防止频繁请求)
+        {
+            let cache = state.minute_data_cache.read().await;
+            if let Some(entry) = cache.get(&normalized_code) {
+                if entry.timestamp.elapsed().as_secs() < 10 {
+                    return Json(json!({
+                        "status": "success",
+                        "data": entry.data,
+                        "cached": true
+                    }));
+                }
+            }
+        }
         
         // 转换代码格式为东方财富格式 (例如 sh600519 -> 1.600519)
         let secid = if normalized_code.starts_with("sh") {
@@ -1406,24 +1538,8 @@ async fn get_stock_minute_data(
             format!("0.{}", normalized_code)
         };
 
-        // 计算预期的交易日描述，用于前端提示
-        let now = Local::now();
-        let weekday = now.weekday().num_days_from_monday(); // 1=Mon, 7=Sun
-        let hour = now.hour();
-        let minute = now.minute();
-        let is_trading_time = (weekday >= 1 && weekday <= 5) && 
-                              ((hour == 9 && minute >= 30) || (hour == 10) || (hour == 11) || 
-                               (hour == 13) || (hour == 14) || (hour == 15 && minute == 0));
-        
-        let mut trade_date_hint = "今日".to_string();
-        if !is_trading_time {
-            // 简单估算上一个交易日，用于提示
-            // 注意：这只是一个提示，实际数据由东财接口决定
-            trade_date_hint = "最近交易日".to_string();
-        }
-
         // 使用东方财富分时数据接口
-        // fields2: f51(时间), f52(最新价), f53(均价), f54(成交量), f55(成交额), f56:买一量...
+        // fields2: f51(时间), f52(最新价), f53(均价), f54(成交量(手)), f55(成交额(元))...
         // isclose=1 表示包含收盘价，datalen=240 获取全天数据
         let url = format!(
             "http://push2.eastmoney.com/api/qt/stock/trends/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&isclose=1&datalen=240",
@@ -1445,73 +1561,184 @@ async fn get_stock_minute_data(
             Ok(resp) => {
                 if let Ok(text) = resp.text().await {
                     if let Ok(root) = serde_json::from_str::<Value>(&text) {
-                        // 增加容错：检查 data 字段是否存在且为对象
-                        if let Some(data) = root.get("data") {
-                            // 如果 data 是数组（通常表示错误或无数据），直接返回空或错误
-                            if data.is_array() {
-                                eprintln!("⚠️ Eastmoney minute data is array (likely error/no data) for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
+                        // 检查 rc 状态码，0 表示成功
+                        if let Some(rc) = root.get("rc").and_then(|v| v.as_i64()) {
+                            if rc != 0 {
+                                eprintln!("⚠️ Eastmoney API returned error rc: {} for {}", rc, normalized_code);
                                 return Json(json!({
                                     "status": "success",
                                     "data": [],
-                                    "msg": "暂无分时数据"
+                                    "msg": "API Error"
                                 }));
                             }
-                            
-                            // 只有当 data 是对象时，才尝试获取 trends
-                            if let Some(trends) = data.get("trends") {
-                                if let Some(arr) = trends.as_array() {
-                                    let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
-                                    
-                                    // 获取交易日期，用于拼接完整时间
-                                    let trade_date = data.get("date").and_then(|v| v.as_str()).unwrap_or("");
+                        }
 
-                                    for trend_item in arr {
-                                        if let Some(s) = trend_item.as_str() {
-                                            let parts: Vec<&str> = s.split(',').collect();
-                                            // 东方财富分时数据格式: 
-                                            // f51:时间(HH:MM), f52:最新价, f53:均价, f54:成交量(手), f55:成交额(元), f56:买一量...
-                                            if parts.len() >= 5 {
-                                                let time_str_raw = parts[0].trim();
-                                                let price = parts[1].parse::<f64>().unwrap_or(0.0);
-                                                let avg_price = parts[2].parse::<f64>().unwrap_or(0.0);
-                                                let volume = parts[3].parse::<f64>().unwrap_or(0.0); // 单位：手
-                                                // let amount = parts[4].parse::<f64>().unwrap_or(0.0); // 成交额
-                                                
-                                                // 拼接完整时间: YYYY-MM-DD HH:MM
-                                                let full_time = if !trade_date.is_empty() && !time_str_raw.is_empty() {
-                                                    // 确保时间格式为 HH:MM，有些可能带秒 HH:MM:SS，取前5位
-                                                    let clean_time = if time_str_raw.len() >= 5 {
-                                                        time_str_raw[..5].to_string()
-                                                    } else {
-                                                        time_str_raw.to_string()
-                                                    };
-                                                    format!("{} {}", trade_date, clean_time)
-                                                } else {
-                                                    continue;
-                                                };
+                        // 修复：更健壮地处理 data 字段结构
+                        if let Some(data) = root.get("data") {
+                            // 情况1: data 是数组。这通常发生在股票停牌、未上市或接口返回状态包时。
+                            if data.is_array() {
+                                let arr = data.as_array().unwrap();
+                                
+                                let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
+                                let mut trade_date_str = "";
 
-                                                minute_data.push(MinuteDataPoint {
-                                                    time: full_time,
-                                                    price,
-                                                    avg_price,
-                                                    volume,
-                                                    open: price, // 分时图中 open 通常不单独显示，或用第一笔价格
-                                                    close: price,
-                                                });
-                                            }
+                                for item in arr {
+                                    if let Some(obj) = item.as_object() {
+                                        let f2_val = obj.get("f2").and_then(|v| v.as_i64()).unwrap_or(0);
+                                        if f2_val == 0 { continue; }
+                                        
+                                        let min_part = f2_val % 100;
+                                        let hour_part = (f2_val / 100) % 100;
+                                        let day_part = (f2_val / 10000) % 100;
+                                        let month_part = (f2_val / 1000000) % 100;
+                                        let year_part = (f2_val / 100000000) % 100;
+                                        
+                                        let full_year = 2000 + year_part;
+                                        
+                                        if trade_date_str.is_empty() {
+                                            trade_date_str = Box::leak(format!("{:04}-{:02}-{:02}", full_year, month_part, day_part).into_boxed_str());
                                         }
+                                        
+                                        let time_str = format!("{:04}-{:02}-{:02} {:02}:{:02}", full_year, month_part, day_part, hour_part, min_part);
+                                        
+                                        let price = obj.get("f3").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                        let avg_price = price; 
+                                        
+                                        // 尝试从数组对象中获取成交额，如果存在 f5 或 f6 等字段
+                                        // 注意：不同股票或接口版本可能字段不同，这里尽量兼容
+                                        let amount = obj.get("f5").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+                                        minute_data.push(MinuteDataPoint {
+                                            time: time_str,
+                                            price,
+                                            avg_price,
+                                            volume: 0.0,
+                                            open: price,
+                                            close: price,
+                                            amount,
+                                        });
+                                    }
+                                }
+
+                                if !minute_data.is_empty() {
+                                     // 2. 更新缓存
+                                    {
+                                        let mut cache = state.minute_data_cache.write().await;
+                                        cache.insert(normalized_code.clone(), CacheEntry {
+                                            data: minute_data.clone(),
+                                            timestamp: std::time::Instant::now(),
+                                        });
                                     }
                                     
-                                    println!("Debug: Parsed {} eastmoney minute data points for {}", minute_data.len(), normalized_code);
+                                    let now = chrono::Local::now();
+                                    let weekday = now.weekday().num_days_from_monday();
+                                    let hour = now.hour();
+                                    let minute = now.minute();
+                                    let time_val = hour * 60 + minute;
+                                    let is_trading_time = weekday < 5 && (
+                                        (time_val >= 9 * 60 + 30 && time_val < 11 * 60 + 30) ||
+                                        (time_val >= 13 * 60 && time_val < 15 * 60)
+                                    );
+
                                     return Json(json!({
                                         "status": "success",
                                         "data": minute_data,
-                                        "trade_date": trade_date,
-                                        "is_trading_time": is_trading_time
+                                        "trade_date": trade_date_str,
+                                        "is_trading_time": is_trading_time,
+                                        "cached": false,
+                                        "msg": "Parsed from array format"
+                                    }));
+                                } else {
+                                    eprintln!("⚠️ Eastmoney minute data array parsed but empty valid points for {}", normalized_code);
+                                    return Json(json!({
+                                        "status": "success",
+                                        "data": [],
+                                        "msg": "暂无有效分时数据"
                                     }));
                                 }
-                            } else {
-                                eprintln!("⚠️ No 'trends' field in Eastmoney data for {}. Data keys: {:?}", normalized_code, data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                            }
+                            
+                            // 情况2: data 是对象，尝试获取 trends
+                            if data.is_object() {
+                                if let Some(trends) = data.get("trends") {
+                                    if let Some(arr) = trends.as_array() {
+                                        let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
+                                        let trade_date = data.get("tradeDate").and_then(|v| v.as_str()).unwrap_or("");
+
+                                        for item in arr {
+                                            if let Some(s) = item.as_str() {
+                                                let parts: Vec<&str> = s.split(',').collect();
+                                                // 东方财富分时数据格式: 
+                                                // f51:时间(HH:MM), f52:最新价, f53:均价, f54:成交量(手), f55:成交额(元)...
+                                                // 索引:      0         1       2       3           4
+                                                if parts.len() >= 5 {
+                                                    let time_str_raw = parts[0].trim();
+                                                    let price = parts[1].parse::<f64>().unwrap_or(0.0);
+                                                    let avg_price = parts[2].parse::<f64>().unwrap_or(0.0);
+                                                    let volume = parts[3].parse::<f64>().unwrap_or(0.0); // 单位：手
+                                                    // 新增：解析成交额 (parts[4])
+                                                    let amount = parts[4].parse::<f64>().unwrap_or(0.0);
+                                                    
+                                                    let full_time = if !trade_date.is_empty() && !time_str_raw.is_empty() {
+                                                        let clean_time = if time_str_raw.len() >= 5 {
+                                                            time_str_raw[..5].to_string()
+                                                        } else {
+                                                            time_str_raw.to_string()
+                                                        };
+                                                        format!("{} {}", trade_date, clean_time)
+                                                    } else {
+                                                        continue;
+                                                    };
+
+                                                    minute_data.push(MinuteDataPoint {
+                                                        time: full_time,
+                                                        price,
+                                                        avg_price,
+                                                        volume,
+                                                        open: price,
+                                                        close: price,
+                                                        amount, // 新增：赋值成交额
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        
+                                        // 2. 更新缓存
+                                        {
+                                            let mut cache = state.minute_data_cache.write().await;
+                                            cache.insert(normalized_code.clone(), CacheEntry {
+                                                data: minute_data.clone(),
+                                                timestamp: std::time::Instant::now(),
+                                            });
+                                        }
+                                        
+                                        let now = chrono::Local::now();
+                                        let weekday = now.weekday().num_days_from_monday();
+                                        let hour = now.hour();
+                                        let minute = now.minute();
+                                        let time_val = hour * 60 + minute;
+                                        
+                                        let is_trading_time = weekday < 5 && (
+                                            (time_val >= 9 * 60 + 30 && time_val < 11 * 60 + 30) ||
+                                            (time_val >= 13 * 60 && time_val < 15 * 60)
+                                        );
+
+                                        return Json(json!({
+                                            "status": "success",
+                                            "data": minute_data,
+                                            "trade_date": trade_date,
+                                            "is_trading_time": is_trading_time,
+                                            "cached": false
+                                        }));
+                                    }
+                                } else {
+                                    eprintln!("⚠️ No 'trends' field in Eastmoney data object for {}. Keys: {:?}", normalized_code, data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                                    return Json(json!({
+                                        "status": "success",
+                                        "data": [],
+                                        "msg": "数据格式异常 (无trends字段)"
+                                    }));
+                                }
                             }
                         } else {
                              eprintln!("⚠️ No 'data' field in Eastmoney response for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
@@ -1527,8 +1754,7 @@ async fn get_stock_minute_data(
     Json(json!({"status": "error", "msg": "fetch failed"}))
 }
 
-// 新增：从东方财富获取K线数据
-async fn fetch_kline_data_from_em(code: &str, klt: &str, limit: usize) -> Option<Vec<KLineDataPoint>> {
+async fn fetch_kline_data_from_em_internal(code: &str, klt: &str, limit: usize) -> Option<Vec<KLineDataPoint>> {
     let secid = if code.starts_with("sh") {
         format!("1.{}", &code[2..])
     } else if code.starts_with("sz") {
@@ -1540,6 +1766,8 @@ async fn fetch_kline_data_from_em(code: &str, klt: &str, limit: usize) -> Option
     };
 
     // 东方财富K线接口
+    // klt: 101(日), 102(周), 103(月)
+    // fqt: 1(前复权)
     let url = format!(
         "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={}&fqt=1&beg=0&end=20500101&lmt={}",
         secid, klt, limit
@@ -1559,8 +1787,24 @@ async fn fetch_kline_data_from_em(code: &str, klt: &str, limit: usize) -> Option
     match client.get(&url).send().await {
         Ok(resp) => {
             if let Ok(text) = resp.text().await {
+                // println!("Debug EM KLine Raw: {}", text.chars().take(200).collect::<String>());
+                
                 if let Ok(root) = serde_json::from_str::<Value>(&text) {
+                    // 检查 rc 状态码
+                    if let Some(rc) = root.get("rc").and_then(|v| v.as_i64()) {
+                        if rc != 0 {
+                            eprintln!("⚠️ Eastmoney KLine API returned error rc: {} for {}", rc, code);
+                            return None;
+                        }
+                    }
+
                     if let Some(data) = root.get("data") {
+                        // 如果 data 是空数组或 null，直接返回 None
+                        if data.is_null() || (data.is_array() && data.as_array().unwrap().is_empty()) {
+                            eprintln!("⚠️ Eastmoney KLine data is empty/null for {}", code);
+                            return None;
+                        }
+
                         if let Some(klines) = data.get("klines") {
                             if let Some(arr) = klines.as_array() {
                                 let mut result = Vec::new();
@@ -1591,8 +1835,14 @@ async fn fetch_kline_data_from_em(code: &str, klt: &str, limit: usize) -> Option
                                 }
                                 return if result.is_empty() { None } else { Some(result) };
                             }
+                        } else {
+                             eprintln!("⚠️ No 'klines' field in Eastmoney KLine data for {}", code);
                         }
+                    } else {
+                         eprintln!("⚠️ No 'data' field in Eastmoney KLine response for {}", code);
                     }
+                } else {
+                     eprintln!("❌ Failed to parse Eastmoney KLine JSON for {}", code);
                 }
             }
         }
@@ -1603,7 +1853,7 @@ async fn fetch_kline_data_from_em(code: &str, klt: &str, limit: usize) -> Option
 
 async fn get_stock_kline_data(
     Query(params): Query<HashMap<String, String>>,
-    _state: State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<Value> {
     if let Some(code) = params.get("code") {
         let normalized_code = normalize_stock_code(code);
@@ -1611,17 +1861,45 @@ async fn get_stock_kline_data(
         
         // 映射前端类型到东方财富 klt 参数及限制条数
         // 101=日K, 102=周K, 103=月K
-        // 需求：默认显示90条数据
+        // 修改：默认获取更多数据 (例如 250 条日K约等于1年，周K/月K也相应增加)，以便前端缩放查看
+        // 需求要求首次显示60条，但为了支持“缩小时显示更多”，后端必须返回多于60条的数据
         let (klt, limit) = match ktype {
-            "kweek" => ("102", 90),  // 周K取90周
-            "kmonth" => ("103", 90), // 月K取90月
-            _ => ("101", 90),       // 日K取90天
+            "kweek" => ("102", 200),  // 周K取200周 (约4年)
+            "kmonth" => ("103", 120), // 月K取120月 (10年)
+            _ => ("101", 250),       // 日K取250天 (约1年)
         };
 
-        if let Some(data) = fetch_kline_data_from_em(&normalized_code, klt, limit).await {
+        // 生成缓存 Key，包含类型，因为不同周期的K线数据不同
+        let cache_key = format!("{}_{}", normalized_code, klt);
+
+        // 1. 尝试从缓存获取 (有效期 300 秒，K线数据变化频率较低)
+        {
+            let cache = state.kline_data_cache.read().await;
+            if let Some(entry) = cache.get(&cache_key) {
+                if entry.timestamp.elapsed().as_secs() < 300 {
+                    return Json(json!({
+                        "status": "success",
+                        "data": entry.data,
+                        "cached": true
+                    }));
+                }
+            }
+        }
+
+        // 2. 缓存未命中或过期，从网络获取
+        if let Some(data) = fetch_kline_data_from_em_internal(&normalized_code, klt, limit).await {
+            // 3. 更新缓存
+            {
+                let mut cache = state.kline_data_cache.write().await;
+                cache.insert(cache_key, CacheEntry {
+                    data: data.clone(),
+                    timestamp: std::time::Instant::now(),
+                });
+            }
             return Json(json!({
                 "status": "success",
-                "data": data
+                "data": data,
+                "cached": false
             }));
         }
     }
