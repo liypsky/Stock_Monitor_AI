@@ -1576,18 +1576,21 @@ async fn get_stock_minute_data(
 
                         // 增加容错：检查 data 字段
                         if let Some(data) = root.get("data") {
-                            // 情况1: data 是数组（通常表示错误或无数据，如 {"data":[]}）
+                            // 情况1: data 是数组（通常表示错误或无数据，如 {"data":[]} 或 {"data":[{...}]} 状态包）
                             if data.is_array() {
+                                let arr = data.as_array().unwrap();
                                 // 如果是空数组，视为无数据
-                                if data.as_array().unwrap().is_empty() {
+                                if arr.is_empty() {
                                      eprintln!("⚠️ Eastmoney minute data is empty array for {}. Likely no data today or suspended.", normalized_code);
                                 } else {
-                                     eprintln!("⚠️ Eastmoney minute data is unexpected array for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
+                                     // 如果数组非空，通常是状态信息，而非分时数据。
+                                     // 记录日志以便排查，但不视为严重错误，返回空数据即可。
+                                     eprintln!("⚠️ Eastmoney minute data is unexpected array for {}. This usually indicates suspension or no trading data. First element: {}", normalized_code, arr.first().map_or("".to_string(), |v| v.to_string()));
                                 }
                                 return Json(json!({
                                     "status": "success",
                                     "data": [],
-                                    "msg": "暂无分时数据"
+                                    "msg": "暂无分时数据 (可能停牌或非交易时间)"
                                 }));
                             }
                             

@@ -458,7 +458,10 @@
         const chartDom = document.getElementById('chart-container');
         if (chartInstance) {
             chartInstance.dispose();
+            chartInstance = null;
         }
+        // 确保容器内没有残留的非图表内容，以便 ECharts 正常初始化
+        chartDom.innerHTML = '';
         chartInstance = echarts.init(chartDom);
         window.addEventListener('resize', () => chartInstance.resize());
     }
@@ -521,9 +524,14 @@
             }
         }
 
+        const chartDom = document.getElementById('chart-container');
+
+        // 如果没有数据，先销毁现有图表实例，再显示提示信息
         if (!data || data.length === 0) {
-            chartInstance.clear();
-            const chartDom = document.getElementById('chart-container');
+            if (chartInstance) {
+                chartInstance.dispose();
+                chartInstance = null;
+            }
             if (chartDom) {
                 if (type === 'minute') {
                     chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">暂无分时数据 (可能为非交易时间或停牌)</div>';
@@ -534,34 +542,37 @@
             return;
         }
 
-        // 确保图表容器干净
-        const chartDom = document.getElementById('chart-container');
-        if (chartDom) chartDom.innerHTML = ''; 
+        // 如果已有实例，先销毁，防止 DOM 冲突
+        if (chartInstance) {
+            chartInstance.dispose();
+            chartInstance = null;
+        }
         
+        // 重新初始化图表实例，确保 DOM 干净
+        chartInstance = echarts.init(chartDom);
+        window.addEventListener('resize', () => chartInstance.resize());
+
         let option = {};
 
         if (type === 'minute') {
             // 分时图逻辑
-            const processedData = data.map((item, index) => {
-                let dateObj = null;
-                const timeStr = item.time;
-                dateObj = new Date(timeStr);
+            // 修复：简化时间解析逻辑，直接处理标准格式
+            const processedData = data.map((item) => {
+                // item.time 格式通常为 "2023-10-27 09:30" 或 "09:30"
+                let timeStr = item.time;
+                let dateObj = new Date(timeStr);
+                
+                // 如果直接解析失败（例如只有 HH:mm），尝试补充日期
                 if (isNaN(dateObj.getTime())) {
-                    dateObj = new Date(timeStr.replace(/-/g, '/'));
-                }
-                if (isNaN(dateObj.getTime())) {
-                    const match = timeStr.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/);
-                    if (match) {
-                        const year = parseInt(match[1], 10);
-                        const month = parseInt(match[2], 10) - 1;
-                        const day = parseInt(match[3], 10);
-                        const hour = parseInt(match[4], 10);
-                        const minute = parseInt(match[5], 10);
-                        const second = match[6] ? parseInt(match[6], 10) : 0;
-                        dateObj = new Date(year, month, day, hour, minute, second);
+                    // 假设是今天，或者使用 tradeDate
+                    const baseDate = tradeDate ? new Date(tradeDate.replace(/-/g, '/')) : new Date();
+                    const parts = timeStr.split(':');
+                    if (parts.length >= 2) {
+                        dateObj = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), parseInt(parts[0]), parseInt(parts[1]));
                     }
                 }
-                if (!dateObj || isNaN(dateObj.getTime())) {
+
+                if (isNaN(dateObj.getTime())) {
                     return null;
                 }
                 return { time: dateObj, price: item.price, avg_price: item.avg_price };
@@ -570,7 +581,9 @@
             processedData.sort((a, b) => a.time - b.time);
 
             if (processedData.length === 0) {
-                chartInstance.clear();
+                chartInstance.dispose();
+                chartInstance = null;
+                if(chartDom) chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">数据解析失败</div>';
                 return;
             }
 
@@ -579,7 +592,10 @@
                     trigger: 'axis',
                     formatter: function (params) {
                         if (!params || params.length === 0) return '';
-                        let timeStr = params[0].axisValue; 
+                        // 格式化时间显示
+                        let dateObj = params[0].value[0];
+                        let timeStr = echarts.format.formatTime('HH:mm', dateObj);
+                        
                         let res = `<div style="font-weight:bold">${timeStr}</div>`;
                         params.forEach(p => {
                             res += `${p.marker} ${p.seriesName}: ${p.value[1].toFixed(2)}<br/>`;
@@ -621,9 +637,19 @@
             };
         } else {
             // K线图逻辑
-            const dates = data.map(item => item.date);
-            const values = data.map(item => [item.open, item.close, item.low, item.high]);
-            const volumes = data.map((item, index) => [index, item.volume, item.close > item.open ? 1 : -1]);
+            // 修复：增加数据完整性检查
+            const validData = data.filter(item => item.date && item.open != null && item.close != null);
+            
+            if (validData.length === 0) {
+                 chartInstance.clear();
+                 const chartDom = document.getElementById('chart-container');
+                 if(chartDom) chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">有效K线数据不足</div>';
+                 return;
+            }
+
+            const dates = validData.map(item => item.date);
+            const values = validData.map(item => [item.open, item.close, item.low, item.high]);
+            const volumes = validData.map((item, index) => [index, item.volume, item.close > item.open ? 1 : -1]);
 
             option = {
                 tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
