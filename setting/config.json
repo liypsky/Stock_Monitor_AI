@@ -32,7 +32,7 @@
       "name": "oRouter",
       "type": "openrouter",
       "apiUrl": "https://openrouter.ai/api/v1",
-      "apiKey": "sk-or-v1-20b5cdc623xxxxxxxxe7e00080c417f451c879cd4f93244654521",
+      "apiKey": "${OPENROUTER_API_KEY}",
       "mainModels": "openrouter/free",
       "fallbackModels": "openrouter/free",
       "model": "openrouter/free",
