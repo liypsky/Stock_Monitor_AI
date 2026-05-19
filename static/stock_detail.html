@@ -567,17 +567,6 @@
         
         // 重新初始化图表实例，确保 DOM 干净
         chartInstance = echarts.init(chartDom);
-        // 修复：增加 resize 监听器的空值保护，避免重复添加或操作 null
-        if (chartInstance) {
-             // 注意：这里简单添加可能会导致多次绑定，但在 dispose 后重新 init 的场景下，
-             // 之前的监听器因为引用的是旧实例(已dispose)，内部的 if(check) 会阻止执行。
-             // 为了最佳实践，通常建议只绑定一次全局 resize，或者使用 debounce。
-             // 鉴于 initChart 已经绑定了全局 resize，这里其实不需要再次绑定 window resize。
-             // 但为了保持原有逻辑结构并修复报错，我们依赖 initChart 中的全局监听即可。
-             // 如果此处必须确保 resize 生效，且 initChart 可能被跳过，则需小心处理。
-             // 当前代码流程是 init -> initChart -> loadChartData -> renderChart。
-             // initChart 已经添加了带保护的 resize 监听。
-        }
 
         let option = {};
 
@@ -641,7 +630,9 @@
                 return { 
                     time: timestamp, // 使用时间戳
                     price: item.price, 
-                    avg_price: item.avg_price 
+                    avg_price: item.avg_price,
+                    volume: item.volume || 0,
+                    amount: item.amount || 0 // 新增：保留成交额数据
                 };
             }).filter(item => item !== null);
 
@@ -664,6 +655,16 @@
                 return;
             }
 
+            // 新增：格式化金额辅助函数
+            const formatAmount = (val) => {
+                if (val >= 100000000) {
+                    return (val / 100000000).toFixed(2) + '亿';
+                } else if (val >= 10000) {
+                    return (val / 10000).toFixed(2) + '万';
+                }
+                return val.toFixed(0);
+            };
+
             option = {
                 tooltip: { 
                     trigger: 'axis',
@@ -677,6 +678,18 @@
                         params.forEach(p => {
                             res += `${p.marker} ${p.seriesName}: ${p.value[1].toFixed(2)}<br/>`;
                         });
+                        
+                        // 新增：在 Tooltip 中显示成交额和成交量
+                        // 找到对应的原始数据点
+                        const dataIndex = params[0].dataIndex;
+                        if (processedData[dataIndex]) {
+                            const point = processedData[dataIndex];
+                            res += `<div style="margin-top:5px; border-top:1px solid #eee; padding-top:5px;">`;
+                            res += `成交量: ${point.volume.toFixed(0)} 手<br/>`;
+                            res += `成交额: ${formatAmount(point.amount)}`;
+                            res += `</div>`;
+                        }
+                        
                         return res;
                     }
                 },

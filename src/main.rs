@@ -63,6 +63,8 @@ pub struct MinuteDataPoint {
     pub volume: f64,
     pub open: f64,
     pub close: f64,
+    #[serde(default)]
+    pub amount: f64, // 新增：成交额(元)
 }
 
 // 新增：K线数据结构
@@ -1574,78 +1576,49 @@ async fn get_stock_minute_data(
                         // 修复：更健壮地处理 data 字段结构
                         if let Some(data) = root.get("data") {
                             // 情况1: data 是数组。这通常发生在股票停牌、未上市或接口返回状态包时。
-                            // 但根据日志，有时数组内包含有效的分钟级交易数据 (f2: timestamp, f3: price...)
                             if data.is_array() {
                                 let arr = data.as_array().unwrap();
-                                
-                                // 尝试解析数组中的对象作为分时数据点
-                                // 日志示例: {"f1":2, ..., "f2":2605190915, "f3":132300, ...}
-                                // f2 看起来像 YYYYMMDDHHMM 或类似的时间戳整数
-                                // f3 是价格 (注意：可能是分币单位，需确认，通常东财价格是元，但有些接口是分)
-                                // 观察日志: f3: 132300 -> 13.23? 或者 1323.00? 
-                                // 贵州茅台价格约 1300-1500 元。如果 f3=132300，可能是以分为单位，或者小数点位置不同。
-                                // 通常东财 trends 接口返回的是字符串 "HH:MM,price,avg..."。
-                                // 但这个数组接口可能是另一种备用格式。
-                                // 让我们假设 f3 是价格 * 100 (分) 或者直接是价格。
-                                // 对比 sh600519 (贵州茅台) 价格 ~1300+。
-                                // 日志中 f3: 132300。如果除以 100 是 1323.00，符合茅台价格。
-                                // 因此，我们需要将 f3 / 100.0。
                                 
                                 let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
                                 let mut trade_date_str = "";
 
                                 for item in arr {
                                     if let Some(obj) = item.as_object() {
-                                        // 提取时间 f2 (e.g., 2605190915 -> 2026-05-19 09:15? 或者 2024-05-19?)
-                                        // 这里的年份 26 可能是 2026? 或者是其他编码。
-                                        // 通常这种整数时间是 YYMMDDHHMM。
-                                        // 让我们先提取日期部分用于构建完整时间字符串
-                                        
                                         let f2_val = obj.get("f2").and_then(|v| v.as_i64()).unwrap_or(0);
                                         if f2_val == 0 { continue; }
                                         
-                                        // 解析 YYMMDDHHMM
-                                        // 2605190915 -> Year: 26, Month: 05, Day: 19, Hour: 09, Min: 15
                                         let min_part = f2_val % 100;
                                         let hour_part = (f2_val / 100) % 100;
                                         let day_part = (f2_val / 10000) % 100;
                                         let month_part = (f2_val / 1000000) % 100;
                                         let year_part = (f2_val / 100000000) % 100;
                                         
-                                        // 假设年份是 20xx
                                         let full_year = 2000 + year_part;
                                         
-                                        // 构建日期字符串用于缓存键或显示
                                         if trade_date_str.is_empty() {
                                             trade_date_str = Box::leak(format!("{:04}-{:02}-{:02}", full_year, month_part, day_part).into_boxed_str());
                                         }
                                         
                                         let time_str = format!("{:04}-{:02}-{:02} {:02}:{:02}", full_year, month_part, day_part, hour_part, min_part);
                                         
-                                        // 提取价格 f3
-                                        // 修复：移除强制除以 100 的逻辑。
-                                        // 在大多数东财备用数组接口中，f3 直接表示价格（元）。
-                                        // 之前的 /100 导致高价股（如茅台）显示为十几元，低价股显示为几分钱，严重失真。
                                         let price = obj.get("f3").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                        
-                                        // 提取均价 f8? 或者 f4/f5?
-                                        // 日志中 f8 变化较大，且量级不一致，暂不强行映射均价，避免误导。
-                                        // 若需均价，通常需通过成交额/成交量计算，但此处缺少累计数据。
-                                        // 暂时将均价设为 null 或 0，前端 ECharts 会自动处理断点或忽略。
-                                        // 为了保持图表连续性，这里暂且使用 price，但建议前端若发现均价线无意义可隐藏。
                                         let avg_price = price; 
+                                        
+                                        // 尝试从数组对象中获取成交额，如果存在 f5 或 f6 等字段
+                                        // 注意：不同股票或接口版本可能字段不同，这里尽量兼容
+                                        let amount = obj.get("f5").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-                                        // 修复：正确闭合 MinuteDataPoint 结构体
                                         minute_data.push(MinuteDataPoint {
                                             time: time_str,
                                             price,
                                             avg_price,
-                                            volume: 0.0, // 数组格式中成交量字段不明确，暂置0
+                                            volume: 0.0,
                                             open: price,
                                             close: price,
+                                            amount,
                                         });
-                                    } // 修复：闭合 if let Some(obj)
-                                } // 修复：闭合 for 循环
+                                    }
+                                }
 
                                 if !minute_data.is_empty() {
                                      // 2. 更新缓存
@@ -1657,7 +1630,6 @@ async fn get_stock_minute_data(
                                         });
                                     }
                                     
-                                    // 判断交易时间
                                     let now = chrono::Local::now();
                                     let weekday = now.weekday().num_days_from_monday();
                                     let hour = now.hour();
@@ -1684,14 +1656,13 @@ async fn get_stock_minute_data(
                                         "msg": "暂无有效分时数据"
                                     }));
                                 }
-                            } // 修复：闭合 if data.is_array()
+                            }
                             
                             // 情况2: data 是对象，尝试获取 trends
                             if data.is_object() {
                                 if let Some(trends) = data.get("trends") {
                                     if let Some(arr) = trends.as_array() {
                                         let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
-                                        // 获取交易日期，用于拼接完整时间
                                         let trade_date = data.get("tradeDate").and_then(|v| v.as_str()).unwrap_or("");
 
                                         for item in arr {
@@ -1699,15 +1670,16 @@ async fn get_stock_minute_data(
                                                 let parts: Vec<&str> = s.split(',').collect();
                                                 // 东方财富分时数据格式: 
                                                 // f51:时间(HH:MM), f52:最新价, f53:均价, f54:成交量(手), f55:成交额(元)...
+                                                // 索引:      0         1       2       3           4
                                                 if parts.len() >= 5 {
                                                     let time_str_raw = parts[0].trim();
                                                     let price = parts[1].parse::<f64>().unwrap_or(0.0);
                                                     let avg_price = parts[2].parse::<f64>().unwrap_or(0.0);
                                                     let volume = parts[3].parse::<f64>().unwrap_or(0.0); // 单位：手
+                                                    // 新增：解析成交额 (parts[4])
+                                                    let amount = parts[4].parse::<f64>().unwrap_or(0.0);
                                                     
-                                                    // 拼接完整时间: YYYY-MM-DD HH:MM
                                                     let full_time = if !trade_date.is_empty() && !time_str_raw.is_empty() {
-                                                        // 确保时间格式为 HH:MM，有些可能带秒 HH:MM:SS，取前5位
                                                         let clean_time = if time_str_raw.len() >= 5 {
                                                             time_str_raw[..5].to_string()
                                                         } else {
@@ -1723,8 +1695,9 @@ async fn get_stock_minute_data(
                                                         price,
                                                         avg_price,
                                                         volume,
-                                                        open: price, // 分时图中 open 通常不单独显示，或用第一笔价格
+                                                        open: price,
                                                         close: price,
+                                                        amount, // 新增：赋值成交额
                                                     });
                                                 }
                                             }
@@ -1739,14 +1712,12 @@ async fn get_stock_minute_data(
                                             });
                                         }
                                         
-                                        // 新增：判断当前是否为交易时间
                                         let now = chrono::Local::now();
-                                        let weekday = now.weekday().num_days_from_monday(); // 0=Mon, 4=Fri
+                                        let weekday = now.weekday().num_days_from_monday();
                                         let hour = now.hour();
                                         let minute = now.minute();
                                         let time_val = hour * 60 + minute;
                                         
-                                        // A股交易时间: 周一至周五, 9:30-11:30, 13:00-15:00
                                         let is_trading_time = weekday < 5 && (
                                             (time_val >= 9 * 60 + 30 && time_val < 11 * 60 + 30) ||
                                             (time_val >= 13 * 60 && time_val < 15 * 60)
@@ -1761,7 +1732,6 @@ async fn get_stock_minute_data(
                                         }));
                                     }
                                 } else {
-                                    // trends 字段不存在，可能是其他类型的对象响应
                                     eprintln!("⚠️ No 'trends' field in Eastmoney data object for {}. Keys: {:?}", normalized_code, data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
                                     return Json(json!({
                                         "status": "success",
@@ -1782,9 +1752,8 @@ async fn get_stock_minute_data(
         }
     }
     Json(json!({"status": "error", "msg": "fetch failed"}))
-} // 修复：补全 get_stock_minute_data 函数的闭合大括号
+}
 
-// 新增：从东方财富获取K线数据 (内部函数，供缓存逻辑调用)
 async fn fetch_kline_data_from_em_internal(code: &str, klt: &str, limit: usize) -> Option<Vec<KLineDataPoint>> {
     let secid = if code.starts_with("sh") {
         format!("1.{}", &code[2..])
