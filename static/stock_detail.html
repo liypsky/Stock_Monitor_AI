@@ -856,6 +856,18 @@
             const values = validData.map(item => [item.open, item.close, item.low, item.high]);
             const volumes = validData.map((item, index) => [index, item.volume, item.close > item.open ? 1 : -1]);
 
+            // 新增：计算初始显示范围，默认显示最后 60 条数据
+            const totalLen = validData.length;
+            const defaultShowCount = 60;
+            let startPercent = 0;
+            let endPercent = 100;
+            
+            if (totalLen > defaultShowCount) {
+                // 计算起始百分比：(总长度 - 60) / 总长度 * 100
+                startPercent = ((totalLen - defaultShowCount) / totalLen) * 100;
+                endPercent = 100;
+            }
+
             option = {
                 tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
                 grid: [
@@ -914,16 +926,16 @@
                 dataZoom: [
                     { 
                         type: 'inside', 
-                        start: 0, 
-                        end: 100,
+                        start: startPercent, // 修改：动态计算起始位置
+                        end: endPercent,     // 修改：动态计算结束位置
                         xAxisIndex: [0, 1] // 新增：确保主图和副图联动缩放
                     }, 
                     { 
                         show: true, 
                         type: 'slider', 
                         top: '90%', 
-                        start: 0, 
-                        end: 100,
+                        start: startPercent, // 修改：滑块同步初始位置
+                        end: endPercent,     // 修改：滑块同步初始位置
                         xAxisIndex: [0, 1] // 新增：确保滑块控制主副图联动
                     }
                 ],
@@ -951,6 +963,3 @@
     // 启动
     init();
 </script>
-
-</body>
-</html>
