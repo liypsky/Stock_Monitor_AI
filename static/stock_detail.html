@@ -5,9 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>个股详情 - AI增强版</title>
     <!-- 预连接优化 -->
-    <link rel="preconnect" href="https://cdn.jsdelivr.net">
-    <!-- 引入 ECharts -->
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <!-- 引入 ECharts (替换为阿里云 CDN 以加速国内访问) -->
+    <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
     <style>
         /* 关键CSS内联，防止FOUC */
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f9; margin: 0; padding: 20px; color: #333; }
@@ -533,11 +532,22 @@
                 chartInstance = null;
             }
             if (chartDom) {
+                // 清空容器，防止残留
+                chartDom.innerHTML = '';
+                
+                let msg = '暂无数据';
                 if (type === 'minute') {
-                    chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">暂无分时数据 (可能为非交易时间或停牌)</div>';
+                    // 根据是否交易时间给出更具体的提示
+                    if (isTradingTime === false) {
+                        msg = '当前非交易时间，暂无实时分时数据';
+                    } else {
+                        msg = '暂无分时数据 (可能停牌、未上市或数据暂未就绪)';
+                    }
                 } else {
-                    chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">暂无K线数据</div>';
+                    msg = '暂无K线数据';
                 }
+                
+                chartDom.innerHTML = `<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;font-size:14px;">${msg}</div>`;
             }
             return;
         }
@@ -556,34 +566,65 @@
 
         if (type === 'minute') {
             // 分时图逻辑
-            // 修复：简化时间解析逻辑，直接处理标准格式
+            console.log('Raw minute data sample:', data.slice(0, 2)); // 调试：打印前两条原始数据
+            console.log('Trade Date:', tradeDate, 'Is Trading:', isTradingTime);
+
+            // 修复：优化时间解析逻辑，强制转换为时间戳，提高 ECharts 兼容性
             const processedData = data.map((item) => {
-                // item.time 格式通常为 "2023-10-27 09:30" 或 "09:30"
+                // item.time 格式通常为 "2023-10-27 09:30"
                 let timeStr = item.time;
-                let dateObj = new Date(timeStr);
+                if (!timeStr) return null;
+
+                // 尝试解析时间
+                let timestamp = new Date(timeStr).getTime();
                 
-                // 如果直接解析失败（例如只有 HH:mm），尝试补充日期
-                if (isNaN(dateObj.getTime())) {
-                    // 假设是今天，或者使用 tradeDate
-                    const baseDate = tradeDate ? new Date(tradeDate.replace(/-/g, '/')) : new Date();
-                    const parts = timeStr.split(':');
-                    if (parts.length >= 2) {
-                        dateObj = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), parseInt(parts[0]), parseInt(parts[1]));
+                // 如果解析失败 (NaN)，尝试手动拼接解析
+                if (isNaN(timestamp)) {
+                    // 假设格式为 "YYYY-MM-DD HH:mm"
+                    const parts = timeStr.split(' ');
+                    if (parts.length === 2) {
+                        const dateParts = parts[0].split('-');
+                        const timeParts = parts[1].split(':');
+                        if (dateParts.length === 3 && timeParts.length >= 2) {
+                            // 注意：月份从0开始
+                            const d = new Date(
+                                parseInt(dateParts[0]), 
+                                parseInt(dateParts[1]) - 1, 
+                                parseInt(dateParts[2]), 
+                                parseInt(timeParts[0]), 
+                                parseInt(timeParts[1])
+                            );
+                            timestamp = d.getTime();
+                        }
                     }
                 }
 
-                if (isNaN(dateObj.getTime())) {
+                if (isNaN(timestamp)) {
+                    console.warn('Failed to parse time string:', timeStr);
                     return null;
                 }
-                return { time: dateObj, price: item.price, avg_price: item.avg_price };
+                
+                return { 
+                    time: timestamp, // 使用时间戳
+                    price: item.price, 
+                    avg_price: item.avg_price 
+                };
             }).filter(item => item !== null);
+
+            console.log('Processed minute data count:', processedData.length); // 调试：打印解析后的数据量
+            if (processedData.length > 0) {
+                console.log('Processed minute data sample:', processedData.slice(0, 2));
+            }
 
             processedData.sort((a, b) => a.time - b.time);
 
             if (processedData.length === 0) {
                 chartInstance.dispose();
                 chartInstance = null;
-                if(chartDom) chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">数据解析失败</div>';
+                if(chartDom) {
+                    console.error('All minute data points failed to parse.');
+                    chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">分时数据解析失败 (请检查控制台日志)</div>';
+                }
                 return;
             }
 
@@ -593,7 +634,7 @@
                     formatter: function (params) {
                         if (!params || params.length === 0) return '';
                         // 格式化时间显示
-                        let dateObj = params[0].value[0];
+                        let dateObj = new Date(params[0].value[0]);
                         let timeStr = echarts.format.formatTime('HH:mm', dateObj);
                         
                         let res = `<div style="font-weight:bold">${timeStr}</div>`;

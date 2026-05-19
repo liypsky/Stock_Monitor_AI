@@ -1558,9 +1558,6 @@ async fn get_stock_minute_data(
         match client.get(&url).send().await {
             Ok(resp) => {
                 if let Ok(text) = resp.text().await {
-                    // 增加日志：打印原始响应前200字符，方便调试
-                    // println!("Debug EM Minute Raw: {}", text.chars().take(200).collect::<String>());
-
                     if let Ok(root) = serde_json::from_str::<Value>(&text) {
                         // 检查 rc 状态码，0 表示成功
                         if let Some(rc) = root.get("rc").and_then(|v| v.as_i64()) {
@@ -1574,30 +1571,34 @@ async fn get_stock_minute_data(
                             }
                         }
 
-                        // 增加容错：检查 data 字段
+                        // 修复：更健壮地处理 data 字段结构
                         if let Some(data) = root.get("data") {
-                            // 情况1: data 是数组（通常表示错误或无数据，如 {"data":[]} 或 {"data":[{...}]} 状态包）
+                            // 情况1: data 是数组。这通常发生在股票停牌、未上市或接口返回状态包时。
+                            // 例如: [{"f1":2, "f2":...}] 这种结构不是分时数据
                             if data.is_array() {
-                                let arr = data.as_array().unwrap();
-                                // 如果是空数组，视为无数据
-                                if arr.is_empty() {
-                                     eprintln!("⚠️ Eastmoney minute data is empty array for {}. Likely no data today or suspended.", normalized_code);
-                                } else {
-                                     // 如果数组非空，通常是状态信息，而非分时数据。
-                                     // 记录日志以便排查，但不视为严重错误，返回空数据即可。
-                                     eprintln!("⚠️ Eastmoney minute data is unexpected array for {}. This usually indicates suspension or no trading data. First element: {}", normalized_code, arr.first().map_or("".to_string(), |v| v.to_string()));
-                                }
+                                eprintln!("⚠️ Eastmoney minute data is array for {}. This indicates suspension, no trading data, or invalid stock. Data: {}", normalized_code, data);
                                 return Json(json!({
                                     "status": "success",
                                     "data": [],
-                                    "msg": "暂无分时数据 (可能停牌或非交易时间)"
+                                    "msg": "暂无分时数据 (可能停牌、未开盘或代码无效)"
                                 }));
                             }
                             
                             // 情况2: data 是对象，尝试获取 trends
                             if data.is_object() {
+                                // 检查是否有 trends 字段
                                 if let Some(trends) = data.get("trends") {
                                     if let Some(arr) = trends.as_array() {
+                                        // 如果 trends 数组为空，也视为无数据
+                                        if arr.is_empty() {
+                                            eprintln!("⚠️ Eastmoney trends array is empty for {}", normalized_code);
+                                            return Json(json!({
+                                                "status": "success",
+                                                "data": [],
+                                                "msg": "暂无分时数据"
+                                            }));
+                                        }
+
                                         let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
                                         
                                         // 获取交易日期，用于拼接完整时间
@@ -1648,8 +1649,6 @@ async fn get_stock_minute_data(
                                             });
                                         }
                                         
-                                        // println!("Debug: Parsed {} eastmoney minute data points for {}", minute_data.len(), normalized_code);
-                                        
                                         // 新增：判断当前是否为交易时间
                                         let now = chrono::Local::now();
                                         let weekday = now.weekday().num_days_from_monday(); // 0=Mon, 4=Fri
@@ -1672,8 +1671,13 @@ async fn get_stock_minute_data(
                                         }));
                                     }
                                 } else {
-                                    // trends 字段不存在
-                                    eprintln!("⚠️ No 'trends' field in Eastmoney data for {}. Data keys: {:?}", normalized_code, data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                                    // trends 字段不存在，可能是其他类型的对象响应
+                                    eprintln!("⚠️ No 'trends' field in Eastmoney data object for {}. Keys: {:?}", normalized_code, data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                                    return Json(json!({
+                                        "status": "success",
+                                        "data": [],
+                                        "msg": "数据格式异常 (无trends字段)"
+                                    }));
                                 }
                             }
                         } else {
