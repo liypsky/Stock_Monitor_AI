@@ -462,7 +462,14 @@
         // 确保容器内没有残留的非图表内容，以便 ECharts 正常初始化
         chartDom.innerHTML = '';
         chartInstance = echarts.init(chartDom);
-        window.addEventListener('resize', () => chartInstance.resize());
+        // 修复：仅在实例创建成功后添加监听器，并增加内部空值检查
+        if (chartInstance) {
+            window.addEventListener('resize', () => {
+                if (chartInstance) {
+                    chartInstance.resize();
+                }
+            });
+        }
     }
 
     // 切换图表标签
@@ -560,7 +567,17 @@
         
         // 重新初始化图表实例，确保 DOM 干净
         chartInstance = echarts.init(chartDom);
-        window.addEventListener('resize', () => chartInstance.resize());
+        // 修复：增加 resize 监听器的空值保护，避免重复添加或操作 null
+        if (chartInstance) {
+             // 注意：这里简单添加可能会导致多次绑定，但在 dispose 后重新 init 的场景下，
+             // 之前的监听器因为引用的是旧实例(已dispose)，内部的 if(check) 会阻止执行。
+             // 为了最佳实践，通常建议只绑定一次全局 resize，或者使用 debounce。
+             // 鉴于 initChart 已经绑定了全局 resize，这里其实不需要再次绑定 window resize。
+             // 但为了保持原有逻辑结构并修复报错，我们依赖 initChart 中的全局监听即可。
+             // 如果此处必须确保 resize 生效，且 initChart 可能被跳过，则需小心处理。
+             // 当前代码流程是 init -> initChart -> loadChartData -> renderChart。
+             // initChart 已经添加了带保护的 resize 监听。
+        }
 
         let option = {};
 
@@ -573,20 +590,37 @@
             const processedData = data.map((item) => {
                 // item.time 格式通常为 "2023-10-27 09:30"
                 let timeStr = item.time;
-                if (!timeStr) return null;
+                if (!timeStr) {
+                    console.warn('Missing time string in item:', item);
+                    return null;
+                }
 
                 // 尝试解析时间
                 let timestamp = new Date(timeStr).getTime();
                 
                 // 如果解析失败 (NaN)，尝试手动拼接解析
                 if (isNaN(timestamp)) {
-                    // 假设格式为 "YYYY-MM-DD HH:mm"
+                    // 假设格式为 "YYYY-MM-DD HH:mm" 或 "HH:mm" (需结合 tradeDate)
                     const parts = timeStr.split(' ');
                     if (parts.length === 2) {
+                        // 完整格式 "YYYY-MM-DD HH:mm"
                         const dateParts = parts[0].split('-');
                         const timeParts = parts[1].split(':');
                         if (dateParts.length === 3 && timeParts.length >= 2) {
-                            // 注意：月份从0开始
+                            const d = new Date(
+                                parseInt(dateParts[0]), 
+                                parseInt(dateParts[1]) - 1, 
+                                parseInt(dateParts[2]), 
+                                parseInt(timeParts[0]), 
+                                parseInt(timeParts[1])
+                            );
+                            timestamp = d.getTime();
+                        }
+                    } else if (parts.length === 1 && tradeDate) {
+                        // 只有时间 "HH:mm"，需要结合 tradeDate
+                        const timeParts = parts[0].split(':');
+                        const dateParts = tradeDate.split('-');
+                        if (dateParts.length === 3 && timeParts.length >= 2) {
                             const d = new Date(
                                 parseInt(dateParts[0]), 
                                 parseInt(dateParts[1]) - 1, 
@@ -600,7 +634,7 @@
                 }
 
                 if (isNaN(timestamp)) {
-                    console.warn('Failed to parse time string:', timeStr);
+                    console.warn('Failed to parse time string:', timeStr, 'with tradeDate:', tradeDate);
                     return null;
                 }
                 
@@ -619,8 +653,10 @@
             processedData.sort((a, b) => a.time - b.time);
 
             if (processedData.length === 0) {
-                chartInstance.dispose();
-                chartInstance = null;
+                if (chartInstance) {
+                    chartInstance.dispose();
+                    chartInstance = null;
+                }
                 if(chartDom) {
                     console.error('All minute data points failed to parse.');
                     chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">分时数据解析失败 (请检查控制台日志)</div>';
@@ -682,7 +718,10 @@
             const validData = data.filter(item => item.date && item.open != null && item.close != null);
             
             if (validData.length === 0) {
-                 chartInstance.clear();
+                 if (chartInstance) {
+                     chartInstance.dispose();
+                     chartInstance = null;
+                 }
                  const chartDom = document.getElementById('chart-container');
                  if(chartDom) chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">有效K线数据不足</div>';
                  return;
@@ -753,7 +792,10 @@
             };
         }
 
-        chartInstance.setOption(option, true);
+        // 修复：在设置选项前检查实例是否存在
+        if (chartInstance) {
+            chartInstance.setOption(option, true);
+        }
     }
 
     // 启动

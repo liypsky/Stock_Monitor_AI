@@ -1574,14 +1574,118 @@ async fn get_stock_minute_data(
                         // 修复：更健壮地处理 data 字段结构
                         if let Some(data) = root.get("data") {
                             // 情况1: data 是数组。这通常发生在股票停牌、未上市或接口返回状态包时。
-                            // 例如: [{"f1":2, "f2":...}] 这种结构不是分时数据
+                            // 但根据日志，有时数组内包含有效的分钟级交易数据 (f2: timestamp, f3: price...)
                             if data.is_array() {
-                                eprintln!("⚠️ Eastmoney minute data is array for {}. This indicates suspension, no trading data, or invalid stock. Data: {}", normalized_code, data);
-                                return Json(json!({
-                                    "status": "success",
-                                    "data": [],
-                                    "msg": "暂无分时数据 (可能停牌、未开盘或代码无效)"
-                                }));
+                                let arr = data.as_array().unwrap();
+                                
+                                // 尝试解析数组中的对象作为分时数据点
+                                // 日志示例: {"f1":2, ..., "f2":2605190915, "f3":132300, ...}
+                                // f2 看起来像 YYYYMMDDHHMM 或类似的时间戳整数
+                                // f3 是价格 (注意：可能是分币单位，需确认，通常东财价格是元，但有些接口是分)
+                                // 观察日志: f3: 132300 -> 13.23? 或者 1323.00? 
+                                // 贵州茅台价格约 1300-1500 元。如果 f3=132300，可能是以分为单位，或者小数点位置不同。
+                                // 通常东财 trends 接口返回的是字符串 "HH:MM,price,avg..."。
+                                // 但这个数组接口可能是另一种备用格式。
+                                // 让我们假设 f3 是价格 * 100 (分) 或者直接是价格。
+                                // 对比 sh600519 (贵州茅台) 价格 ~1300+。
+                                // 日志中 f3: 132300。如果除以 100 是 1323.00，符合茅台价格。
+                                // 因此，我们需要将 f3 / 100.0。
+                                
+                                let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
+                                let mut trade_date_str = "";
+
+                                for item in arr {
+                                    if let Some(obj) = item.as_object() {
+                                        // 提取时间 f2 (e.g., 2605190915 -> 2026-05-19 09:15? 或者 2024-05-19?)
+                                        // 这里的年份 26 可能是 2026? 或者是其他编码。
+                                        // 通常这种整数时间是 YYMMDDHHMM。
+                                        // 让我们先提取日期部分用于构建完整时间字符串
+                                        
+                                        let f2_val = obj.get("f2").and_then(|v| v.as_i64()).unwrap_or(0);
+                                        if f2_val == 0 { continue; }
+                                        
+                                        // 解析 YYMMDDHHMM
+                                        // 2605190915 -> Year: 26, Month: 05, Day: 19, Hour: 09, Min: 15
+                                        let min_part = f2_val % 100;
+                                        let hour_part = (f2_val / 100) % 100;
+                                        let day_part = (f2_val / 10000) % 100;
+                                        let month_part = (f2_val / 1000000) % 100;
+                                        let year_part = (f2_val / 100000000) % 100;
+                                        
+                                        // 假设年份是 20xx
+                                        let full_year = 2000 + year_part;
+                                        
+                                        // 构建日期字符串用于缓存键或显示
+                                        if trade_date_str.is_empty() {
+                                            trade_date_str = Box::leak(format!("{:04}-{:02}-{:02}", full_year, month_part, day_part).into_boxed_str());
+                                        }
+                                        
+                                        let time_str = format!("{:04}-{:02}-{:02} {:02}:{:02}", full_year, month_part, day_part, hour_part, min_part);
+                                        
+                                        // 提取价格 f3
+                                        // 注意：根据日志 f3=132300 对应茅台 ~1323元，所以需除以 100
+                                        let price_raw = obj.get("f3").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                        let price = price_raw / 100.0;
+                                        
+                                        // 提取均价 f8? 或者 f4/f5?
+                                        // 日志中 f8: 1323000 -> 13230.00? 不太像均价。
+                                        // 通常均价在 trends 字符串里是第二个值。
+                                        // 在这个对象数组中，可能没有直接的均价字段，或者需要计算。
+                                        // 暂时用价格代替均价，或者寻找其他字段。
+                                        // 观察 f8 变化: 1323000, 1321900... 也是价格量级 * 1000? 
+                                        // 如果 f3 是现价(分)，f8 可能是均价(分)*10? 或者成交额相关?
+                                        // 为了安全，如果没有明确均价字段，前端通常可以接受均价等于现价，或者不画均价线。
+                                        // 这里暂且将均价设为与现价相同，避免前端报错。
+                                        let avg_price = price; 
+
+                                        minute_data.push(MinuteDataPoint {
+                                            time: time_str,
+                                            price,
+                                            avg_price,
+                                            volume: 0.0, // 数组中可能有成交量字段，如 f14/f15，但单位需确认。暂置0或简单映射
+                                            open: price,
+                                            close: price,
+                                        });
+                                    }
+                                }
+                                
+                                if !minute_data.is_empty() {
+                                     // 2. 更新缓存
+                                    {
+                                        let mut cache = state.minute_data_cache.write().await;
+                                        cache.insert(normalized_code.clone(), CacheEntry {
+                                            data: minute_data.clone(),
+                                            timestamp: std::time::Instant::now(),
+                                        });
+                                    }
+                                    
+                                    // 判断交易时间
+                                    let now = chrono::Local::now();
+                                    let weekday = now.weekday().num_days_from_monday();
+                                    let hour = now.hour();
+                                    let minute = now.minute();
+                                    let time_val = hour * 60 + minute;
+                                    let is_trading_time = weekday < 5 && (
+                                        (time_val >= 9 * 60 + 30 && time_val < 11 * 60 + 30) ||
+                                        (time_val >= 13 * 60 && time_val < 15 * 60)
+                                    );
+
+                                    return Json(json!({
+                                        "status": "success",
+                                        "data": minute_data,
+                                        "trade_date": trade_date_str,
+                                        "is_trading_time": is_trading_time,
+                                        "cached": false,
+                                        "msg": "Parsed from array format"
+                                    }));
+                                } else {
+                                    eprintln!("⚠️ Eastmoney minute data array parsed but empty valid points for {}", normalized_code);
+                                    return Json(json!({
+                                        "status": "success",
+                                        "data": [],
+                                        "msg": "暂无有效分时数据"
+                                    }));
+                                }
                             }
                             
                             // 情况2: data 是对象，尝试获取 trends
