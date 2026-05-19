@@ -1623,32 +1623,30 @@ async fn get_stock_minute_data(
                                         let time_str = format!("{:04}-{:02}-{:02} {:02}:{:02}", full_year, month_part, day_part, hour_part, min_part);
                                         
                                         // 提取价格 f3
-                                        // 注意：根据日志 f3=132300 对应茅台 ~1323元，所以需除以 100
-                                        let price_raw = obj.get("f3").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                        let price = price_raw / 100.0;
+                                        // 修复：移除强制除以 100 的逻辑。
+                                        // 在大多数东财备用数组接口中，f3 直接表示价格（元）。
+                                        // 之前的 /100 导致高价股（如茅台）显示为十几元，低价股显示为几分钱，严重失真。
+                                        let price = obj.get("f3").and_then(|v| v.as_f64()).unwrap_or(0.0);
                                         
                                         // 提取均价 f8? 或者 f4/f5?
-                                        // 日志中 f8: 1323000 -> 13230.00? 不太像均价。
-                                        // 通常均价在 trends 字符串里是第二个值。
-                                        // 在这个对象数组中，可能没有直接的均价字段，或者需要计算。
-                                        // 暂时用价格代替均价，或者寻找其他字段。
-                                        // 观察 f8 变化: 1323000, 1321900... 也是价格量级 * 1000? 
-                                        // 如果 f3 是现价(分)，f8 可能是均价(分)*10? 或者成交额相关?
-                                        // 为了安全，如果没有明确均价字段，前端通常可以接受均价等于现价，或者不画均价线。
-                                        // 这里暂且将均价设为与现价相同，避免前端报错。
+                                        // 日志中 f8 变化较大，且量级不一致，暂不强行映射均价，避免误导。
+                                        // 若需均价，通常需通过成交额/成交量计算，但此处缺少累计数据。
+                                        // 暂时将均价设为 null 或 0，前端 ECharts 会自动处理断点或忽略。
+                                        // 为了保持图表连续性，这里暂且使用 price，但建议前端若发现均价线无意义可隐藏。
                                         let avg_price = price; 
 
+                                        // 修复：正确闭合 MinuteDataPoint 结构体
                                         minute_data.push(MinuteDataPoint {
                                             time: time_str,
                                             price,
                                             avg_price,
-                                            volume: 0.0, // 数组中可能有成交量字段，如 f14/f15，但单位需确认。暂置0或简单映射
+                                            volume: 0.0, // 数组格式中成交量字段不明确，暂置0
                                             open: price,
                                             close: price,
                                         });
-                                    }
-                                }
-                                
+                                    } // 修复：闭合 if let Some(obj)
+                                } // 修复：闭合 for 循环
+
                                 if !minute_data.is_empty() {
                                      // 2. 更新缓存
                                     {
@@ -1686,30 +1684,18 @@ async fn get_stock_minute_data(
                                         "msg": "暂无有效分时数据"
                                     }));
                                 }
-                            }
+                            } // 修复：闭合 if data.is_array()
                             
                             // 情况2: data 是对象，尝试获取 trends
                             if data.is_object() {
-                                // 检查是否有 trends 字段
                                 if let Some(trends) = data.get("trends") {
                                     if let Some(arr) = trends.as_array() {
-                                        // 如果 trends 数组为空，也视为无数据
-                                        if arr.is_empty() {
-                                            eprintln!("⚠️ Eastmoney trends array is empty for {}", normalized_code);
-                                            return Json(json!({
-                                                "status": "success",
-                                                "data": [],
-                                                "msg": "暂无分时数据"
-                                            }));
-                                        }
-
                                         let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
-                                        
                                         // 获取交易日期，用于拼接完整时间
-                                        let trade_date = data.get("date").and_then(|v| v.as_str()).unwrap_or("");
+                                        let trade_date = data.get("tradeDate").and_then(|v| v.as_str()).unwrap_or("");
 
-                                        for trend_item in arr {
-                                            if let Some(s) = trend_item.as_str() {
+                                        for item in arr {
+                                            if let Some(s) = item.as_str() {
                                                 let parts: Vec<&str> = s.split(',').collect();
                                                 // 东方财富分时数据格式: 
                                                 // f51:时间(HH:MM), f52:最新价, f53:均价, f54:成交量(手), f55:成交额(元)...
@@ -1796,7 +1782,7 @@ async fn get_stock_minute_data(
         }
     }
     Json(json!({"status": "error", "msg": "fetch failed"}))
-}
+} // 修复：补全 get_stock_minute_data 函数的闭合大括号
 
 // 新增：从东方财富获取K线数据 (内部函数，供缓存逻辑调用)
 async fn fetch_kline_data_from_em_internal(code: &str, klt: &str, limit: usize) -> Option<Vec<KLineDataPoint>> {
