@@ -1423,7 +1423,7 @@ async fn get_stock_minute_data(
         }
 
         // 使用东方财富分时数据接口
-        // fields2: f51(时间), f52(最新价), f53(均价), f54(成交量), f55(成交额), f56:买一量...
+        // fields2: f51(时间), f52(最新价), f53(均价), f54(成交量(手)), f55(成交额(元))...
         // isclose=1 表示包含收盘价，datalen=240 获取全天数据
         let url = format!(
             "http://push2.eastmoney.com/api/qt/stock/trends/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&isclose=1&datalen=240",
@@ -1444,12 +1444,32 @@ async fn get_stock_minute_data(
         match client.get(&url).send().await {
             Ok(resp) => {
                 if let Ok(text) = resp.text().await {
+                    // 增加日志：打印原始响应前200字符，方便调试
+                    // println!("Debug EM Minute Raw: {}", text.chars().take(200).collect::<String>());
+
                     if let Ok(root) = serde_json::from_str::<Value>(&text) {
-                        // 增加容错：检查 data 字段是否存在且为对象
+                        // 检查 rc 状态码，0 表示成功
+                        if let Some(rc) = root.get("rc").and_then(|v| v.as_i64()) {
+                            if rc != 0 {
+                                eprintln!("⚠️ Eastmoney API returned error rc: {} for {}", rc, normalized_code);
+                                return Json(json!({
+                                    "status": "success",
+                                    "data": [],
+                                    "msg": "API Error"
+                                }));
+                            }
+                        }
+
+                        // 增加容错：检查 data 字段
                         if let Some(data) = root.get("data") {
-                            // 如果 data 是数组（通常表示错误或无数据），直接返回空或错误
+                            // 情况1: data 是数组（通常表示错误或无数据，如 {"data":[]}）
                             if data.is_array() {
-                                eprintln!("⚠️ Eastmoney minute data is array (likely error/no data) for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
+                                // 如果是空数组，视为无数据
+                                if data.as_array().unwrap().is_empty() {
+                                     eprintln!("⚠️ Eastmoney minute data is empty array for {}. Likely no data today or suspended.", normalized_code);
+                                } else {
+                                     eprintln!("⚠️ Eastmoney minute data is unexpected array for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
+                                }
                                 return Json(json!({
                                     "status": "success",
                                     "data": [],
@@ -1457,61 +1477,63 @@ async fn get_stock_minute_data(
                                 }));
                             }
                             
-                            // 只有当 data 是对象时，才尝试获取 trends
-                            if let Some(trends) = data.get("trends") {
-                                if let Some(arr) = trends.as_array() {
-                                    let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
-                                    
-                                    // 获取交易日期，用于拼接完整时间
-                                    let trade_date = data.get("date").and_then(|v| v.as_str()).unwrap_or("");
+                            // 情况2: data 是对象，尝试获取 trends
+                            if data.is_object() {
+                                if let Some(trends) = data.get("trends") {
+                                    if let Some(arr) = trends.as_array() {
+                                        let mut minute_data: Vec<MinuteDataPoint> = Vec::new();
+                                        
+                                        // 获取交易日期，用于拼接完整时间
+                                        let trade_date = data.get("date").and_then(|v| v.as_str()).unwrap_or("");
 
-                                    for trend_item in arr {
-                                        if let Some(s) = trend_item.as_str() {
-                                            let parts: Vec<&str> = s.split(',').collect();
-                                            // 东方财富分时数据格式: 
-                                            // f51:时间(HH:MM), f52:最新价, f53:均价, f54:成交量(手), f55:成交额(元), f56:买一量...
-                                            if parts.len() >= 5 {
-                                                let time_str_raw = parts[0].trim();
-                                                let price = parts[1].parse::<f64>().unwrap_or(0.0);
-                                                let avg_price = parts[2].parse::<f64>().unwrap_or(0.0);
-                                                let volume = parts[3].parse::<f64>().unwrap_or(0.0); // 单位：手
-                                                // let amount = parts[4].parse::<f64>().unwrap_or(0.0); // 成交额
-                                                
-                                                // 拼接完整时间: YYYY-MM-DD HH:MM
-                                                let full_time = if !trade_date.is_empty() && !time_str_raw.is_empty() {
-                                                    // 确保时间格式为 HH:MM，有些可能带秒 HH:MM:SS，取前5位
-                                                    let clean_time = if time_str_raw.len() >= 5 {
-                                                        time_str_raw[..5].to_string()
+                                        for trend_item in arr {
+                                            if let Some(s) = trend_item.as_str() {
+                                                let parts: Vec<&str> = s.split(',').collect();
+                                                // 东方财富分时数据格式: 
+                                                // f51:时间(HH:MM), f52:最新价, f53:均价, f54:成交量(手), f55:成交额(元)...
+                                                if parts.len() >= 5 {
+                                                    let time_str_raw = parts[0].trim();
+                                                    let price = parts[1].parse::<f64>().unwrap_or(0.0);
+                                                    let avg_price = parts[2].parse::<f64>().unwrap_or(0.0);
+                                                    let volume = parts[3].parse::<f64>().unwrap_or(0.0); // 单位：手
+                                                    
+                                                    // 拼接完整时间: YYYY-MM-DD HH:MM
+                                                    let full_time = if !trade_date.is_empty() && !time_str_raw.is_empty() {
+                                                        // 确保时间格式为 HH:MM，有些可能带秒 HH:MM:SS，取前5位
+                                                        let clean_time = if time_str_raw.len() >= 5 {
+                                                            time_str_raw[..5].to_string()
+                                                        } else {
+                                                            time_str_raw.to_string()
+                                                        };
+                                                        format!("{} {}", trade_date, clean_time)
                                                     } else {
-                                                        time_str_raw.to_string()
+                                                        continue;
                                                     };
-                                                    format!("{} {}", trade_date, clean_time)
-                                                } else {
-                                                    continue;
-                                                };
 
-                                                minute_data.push(MinuteDataPoint {
-                                                    time: full_time,
-                                                    price,
-                                                    avg_price,
-                                                    volume,
-                                                    open: price, // 分时图中 open 通常不单独显示，或用第一笔价格
-                                                    close: price,
-                                                });
+                                                    minute_data.push(MinuteDataPoint {
+                                                        time: full_time,
+                                                        price,
+                                                        avg_price,
+                                                        volume,
+                                                        open: price, // 分时图中 open 通常不单独显示，或用第一笔价格
+                                                        close: price,
+                                                    });
+                                                }
                                             }
                                         }
+                                        
+                                        // println!("Debug: Parsed {} eastmoney minute data points for {}", minute_data.len(), normalized_code);
+                                        return Json(json!({
+                                            "status": "success",
+                                            "data": minute_data,
+                                            "trade_date": trade_date,
+                                            "is_trading_time": is_trading_time
+                                        }));
                                     }
-                                    
-                                    println!("Debug: Parsed {} eastmoney minute data points for {}", minute_data.len(), normalized_code);
-                                    return Json(json!({
-                                        "status": "success",
-                                        "data": minute_data,
-                                        "trade_date": trade_date,
-                                        "is_trading_time": is_trading_time
-                                    }));
+                                } else {
+                                    // trends 字段不存在
+                                    eprintln!("⚠️ No 'trends' field in Eastmoney data for {}. Data keys: {:?}", normalized_code, data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
                                 }
-                            } else {
-                                eprintln!("⚠️ No 'trends' field in Eastmoney data for {}. Data keys: {:?}", normalized_code, data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
                             }
                         } else {
                              eprintln!("⚠️ No 'data' field in Eastmoney response for {}. Response: {}", normalized_code, text.chars().take(200).collect::<String>());
@@ -1540,6 +1562,8 @@ async fn fetch_kline_data_from_em(code: &str, klt: &str, limit: usize) -> Option
     };
 
     // 东方财富K线接口
+    // klt: 101(日), 102(周), 103(月)
+    // fqt: 1(前复权)
     let url = format!(
         "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={}&fqt=1&beg=0&end=20500101&lmt={}",
         secid, klt, limit
@@ -1559,8 +1583,24 @@ async fn fetch_kline_data_from_em(code: &str, klt: &str, limit: usize) -> Option
     match client.get(&url).send().await {
         Ok(resp) => {
             if let Ok(text) = resp.text().await {
+                // println!("Debug EM KLine Raw: {}", text.chars().take(200).collect::<String>());
+                
                 if let Ok(root) = serde_json::from_str::<Value>(&text) {
+                    // 检查 rc 状态码
+                    if let Some(rc) = root.get("rc").and_then(|v| v.as_i64()) {
+                        if rc != 0 {
+                            eprintln!("⚠️ Eastmoney KLine API returned error rc: {} for {}", rc, code);
+                            return None;
+                        }
+                    }
+
                     if let Some(data) = root.get("data") {
+                        // 如果 data 是空数组或 null，直接返回 None
+                        if data.is_null() || (data.is_array() && data.as_array().unwrap().is_empty()) {
+                            eprintln!("⚠️ Eastmoney KLine data is empty/null for {}", code);
+                            return None;
+                        }
+
                         if let Some(klines) = data.get("klines") {
                             if let Some(arr) = klines.as_array() {
                                 let mut result = Vec::new();
@@ -1591,8 +1631,14 @@ async fn fetch_kline_data_from_em(code: &str, klt: &str, limit: usize) -> Option
                                 }
                                 return if result.is_empty() { None } else { Some(result) };
                             }
+                        } else {
+                             eprintln!("⚠️ No 'klines' field in Eastmoney KLine data for {}", code);
                         }
+                    } else {
+                         eprintln!("⚠️ No 'data' field in Eastmoney KLine response for {}", code);
                     }
+                } else {
+                     eprintln!("❌ Failed to parse Eastmoney KLine JSON for {}", code);
                 }
             }
         }
