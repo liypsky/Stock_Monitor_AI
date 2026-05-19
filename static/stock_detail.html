@@ -759,6 +759,7 @@
                         gridIndex: 0, // 对应价格图
                         type: 'value', 
                         scale: true, // 不从0开始，适应价格波动
+                        position: 'right', // 新增：Y轴显示在右侧
                         name: '价格',
                         nameTextStyle: { color: '#999', fontSize: 10, padding: [0, 0, 0, 10] },
                         axisLabel: { 
@@ -772,6 +773,7 @@
                         gridIndex: 1, // 对应成交额图
                         type: 'value', 
                         scale: true,
+                        position: 'right', // 新增：Y轴显示在右侧
                         name: '成交额',
                         nameTextStyle: { color: '#999', fontSize: 10, padding: [0, 0, 0, 10] },
                         axisLabel: { 
@@ -786,7 +788,7 @@
                 dataZoom: [
                     {
                         type: 'inside',
-                        xAxisIndex: [0, 1], // 同时控制两个X轴
+                        xAxisIndex: [0, 1], // 同时控制两个X轴，确保主副图联动
                         start: 0,
                         end: 100
                     }
@@ -893,12 +895,37 @@
                     }
                 ],
                 yAxis: [
-                    { scale: true, splitArea: { show: true } },
-                    { scale: true, gridIndex: 1, splitNumber: 2, axisLabel: { show: false }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false } }
+                    { 
+                        scale: true, 
+                        splitArea: { show: true },
+                        position: 'right' // 新增：K线主图Y轴显示在右侧
+                    },
+                    { 
+                        scale: true, 
+                        gridIndex: 1, 
+                        splitNumber: 2, 
+                        axisLabel: { show: false }, 
+                        axisLine: { show: false }, 
+                        axisTick: { show: false }, 
+                        splitLine: { show: false },
+                        position: 'right' // 新增：K线副图Y轴显示在右侧（虽然隐藏了标签，但保持结构一致）
+                    }
                 ],
                 dataZoom: [
-                    { type: 'inside', start: 0, end: 100 }, 
-                    { show: true, type: 'slider', top: '90%', start: 0, end: 100 }
+                    { 
+                        type: 'inside', 
+                        start: 0, 
+                        end: 100,
+                        xAxisIndex: [0, 1] // 新增：确保主图和副图联动缩放
+                    }, 
+                    { 
+                        show: true, 
+                        type: 'slider', 
+                        top: '90%', 
+                        start: 0, 
+                        end: 100,
+                        xAxisIndex: [0, 1] // 新增：确保滑块控制主副图联动
+                    }
                 ],
                 series: [
                     {
