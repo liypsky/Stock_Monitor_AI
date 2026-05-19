@@ -271,13 +271,20 @@
                 const changeClass = stockInfo.change_percent > 0 ? 'up' : (stockInfo.change_percent < 0 ? 'down' : 'flat');
                 const changeSign = stockInfo.change_percent > 0 ? '+' : '';
                 
+                // 修改：增加当前价格显示，并添加颜色标识
                 div.innerHTML = `
                     <span class="index-name">${stockInfo.name}</span>
+                    <div style="margin: 5px 0;">
+                        <span class="${changeClass}" style="font-size: 1.2em; font-weight: bold;">${stockInfo.price.toFixed(2)}</span>
+                    </div>
                     <span class="index-change ${changeClass}">${changeSign}${stockInfo.change_percent.toFixed(2)}%</span>
                 `;
             } else {
                 div.innerHTML = `
                     <span class="index-name">${symbol}</span>
+                    <div style="margin: 5px 0;">
+                        <span style="font-size: 1.2em; font-weight: bold;">--</span>
+                    </div>
                     <span class="index-change flat">--</span>
                 `;
             }
@@ -340,7 +347,7 @@
                 tr.innerHTML = `
                     <td>${stockInfo.symbol}</td>
                     <td>${stockInfo.name}</td>
-                    <td>${stockInfo.price.toFixed(2)}</td>
+                    <td class="${changeClass}">${stockInfo.price.toFixed(2)}</td>
                     <td class="${changeClass}">${changeSign}${stockInfo.change_percent.toFixed(2)}%</td>
                     <td>${stockInfo.high.toFixed(2)}</td>
                     <td>${stockInfo.low.toFixed(2)}</td>
