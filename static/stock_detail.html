@@ -576,6 +576,7 @@
             console.log('Trade Date:', tradeDate, 'Is Trading:', isTradingTime);
 
             // 修复：优化时间解析逻辑，强制转换为时间戳，提高 ECharts 兼容性
+            // 修改：为了去除中午休市空白，我们将采用 Category 轴模式，因此需要保留格式化后的时间字符串
             const processedData = data.map((item) => {
                 // item.time 格式通常为 "2023-10-27 09:30"
                 let timeStr = item.time;
@@ -584,8 +585,9 @@
                     return null;
                 }
 
-                // 尝试解析时间
+                // 尝试解析时间以进行过滤判断
                 let timestamp = new Date(timeStr).getTime();
+                let timeObj = null;
                 
                 // 如果解析失败 (NaN)，尝试手动拼接解析
                 if (isNaN(timestamp)) {
@@ -604,6 +606,7 @@
                                 parseInt(timeParts[1])
                             );
                             timestamp = d.getTime();
+                            timeObj = d;
                         }
                     } else if (parts.length === 1 && tradeDate) {
                         // 只有时间 "HH:mm"，需要结合 tradeDate
@@ -618,21 +621,39 @@
                                 parseInt(timeParts[1])
                             );
                             timestamp = d.getTime();
+                            timeObj = d;
                         }
                     }
+                } else {
+                    timeObj = new Date(timestamp);
                 }
 
-                if (isNaN(timestamp)) {
+                if (isNaN(timestamp) || !timeObj) {
                     console.warn('Failed to parse time string:', timeStr, 'with tradeDate:', tradeDate);
                     return null;
                 }
+
+                // 新增：过滤中午休市时间 (11:30 - 13:00)
+                const hours = timeObj.getHours();
+                const minutes = timeObj.getMinutes();
+                const timeValue = hours * 60 + minutes;
                 
+                // 11:30 (690分钟) <= 时间 < 13:00 (780分钟) 之间的数据去掉
+                if (timeValue >= 690 && timeValue < 780) {
+                    return null;
+                }
+                
+                // 生成用于 Category 轴显示的时间标签 (HH:mm)
+                const timeLabel = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+
                 return { 
-                    time: timestamp, // 使用时间戳
+                    timeLabel: timeLabel, // 用于 X 轴显示
+                    timestamp: timestamp, // 用于排序
                     price: item.price, 
                     avg_price: item.avg_price,
                     volume: item.volume || 0,
-                    amount: item.amount || 0 // 新增：保留成交额数据
+                    // 修改：成交额除以 100 以符合预期单位
+                    amount: (item.amount || 0) / 100 
                 };
             }).filter(item => item !== null);
 
@@ -641,7 +662,8 @@
                 console.log('Processed minute data sample:', processedData.slice(0, 2));
             }
 
-            processedData.sort((a, b) => a.time - b.time);
+            // 按时间戳排序，确保顺序正确
+            processedData.sort((a, b) => a.timestamp - b.timestamp);
 
             if (processedData.length === 0) {
                 if (chartInstance) {
@@ -649,11 +671,17 @@
                     chartInstance = null;
                 }
                 if(chartDom) {
-                    console.error('All minute data points failed to parse.');
-                    chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">分时数据解析失败 (请检查控制台日志)</div>';
+                    console.error('All minute data points failed to parse or were filtered.');
+                    chartDom.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#999;">分时数据解析失败或无有效数据 (请检查控制台日志)</div>';
                 }
                 return;
             }
+
+            // 提取 Category 轴所需的数据数组
+            const xAxisData = processedData.map(i => i.timeLabel);
+            const priceData = processedData.map(i => i.price);
+            const avgPriceData = processedData.map(i => i.avg_price);
+            const amountData = processedData.map(i => i.amount);
 
             // 新增：格式化金额辅助函数
             const formatAmount = (val) => {
@@ -665,63 +693,145 @@
                 return val.toFixed(0);
             };
 
+            // 修改：配置分时图为同花顺风格的上下分栏布局，使用 Category 轴以去除休市空白
             option = {
                 tooltip: { 
                     trigger: 'axis',
+                    axisPointer: { 
+                        type: 'cross',
+                        label: { backgroundColor: '#6a7985' }
+                    },
                     formatter: function (params) {
                         if (!params || params.length === 0) return '';
-                        // 格式化时间显示
-                        let dateObj = new Date(params[0].value[0]);
-                        let timeStr = echarts.format.formatTime('HH:mm', dateObj);
+                        // 获取当前索引对应的时间标签
+                        const timeLabel = params[0].axisValue;
                         
-                        let res = `<div style="font-weight:bold">${timeStr}</div>`;
+                        let res = `<div style="font-weight:bold; margin-bottom:5px;">${timeLabel}</div>`;
+                        
+                        // 遍历所有系列
                         params.forEach(p => {
-                            res += `${p.marker} ${p.seriesName}: ${p.value[1].toFixed(2)}<br/>`;
+                            if (p.seriesName === '分时价') {
+                                res += `${p.marker} 价格: ${p.value.toFixed(2)}<br/>`;
+                            } else if (p.seriesName === '均价') {
+                                res += `${p.marker} 均价: ${p.value.toFixed(2)}<br/>`;
+                            } else if (p.seriesName === '成交额') {
+                                res += `${p.marker} 成交额: ${formatAmount(p.value)}<br/>`;
+                            }
                         });
-                        
-                        // 新增：在 Tooltip 中显示成交额和成交量
-                        // 找到对应的原始数据点
-                        const dataIndex = params[0].dataIndex;
-                        if (processedData[dataIndex]) {
-                            const point = processedData[dataIndex];
-                            res += `<div style="margin-top:5px; border-top:1px solid #eee; padding-top:5px;">`;
-                            res += `成交量: ${point.volume.toFixed(0)} 手<br/>`;
-                            res += `成交额: ${formatAmount(point.amount)}`;
-                            res += `</div>`;
-                        }
                         
                         return res;
                     }
                 },
-                grid: { left: '5%', right: '5%', bottom: '10%', top: '10%' },
-                xAxis: { 
-                    type: 'time', 
-                    boundaryGap: false,
-                    axisLabel: { formatter: '{HH}:{mm}', rotate: 0, interval: 'auto' },
-                    splitLine: { show: true, lineStyle: { type: 'dashed' } }
-                },
-                yAxis: { 
-                    type: 'value', 
-                    scale: true,
-                    splitLine: { show: true, lineStyle: { type: 'dashed' } }
-                },
-                series: [
+                // 修改：定义两个 grid，上部价格，下部成交额
+                grid: [
+                    { left: '5%', right: '5%', top: '5%', height: '65%' }, // 价格区域
+                    { left: '5%', right: '5%', top: '75%', height: '20%' } // 成交额区域
+                ],
+                xAxis: [
                     { 
-                        name: '价格', 
-                        type: 'line', 
-                        data: processedData.map(i => [i.time, i.price]), 
-                        smooth: false, 
-                        showSymbol: false, 
-                        lineStyle: { width: 1.5, color: '#3498db' }, 
-                        areaStyle: { opacity: 0.1 } 
+                        type: 'category', // 修改为 category
+                        data: xAxisData,  // 使用时间标签数组
+                        gridIndex: 0,     // 对应价格图
+                        boundaryGap: false,
+                        axisLabel: { show: false }, // 上部不显示时间标签，避免拥挤
+                        splitLine: { show: true, lineStyle: { type: 'dashed', color: '#eee' } }
                     },
                     { 
-                        name: '均价', 
-                        type: 'line', 
-                        data: processedData.map(i => [i.time, i.avg_price]), 
-                        smooth: false, 
-                        showSymbol: false, 
-                        lineStyle: { width: 1, type: 'dashed', color: '#f39c12' } 
+                        type: 'category', // 修改为 category
+                        data: xAxisData,  // 使用时间标签数组
+                        gridIndex: 1,     // 对应成交额图
+                        boundaryGap: false,
+                        axisLabel: { 
+                            formatter: function (value) {
+                                // 只显示部分标签以避免重叠，例如每30分钟或特定时间点
+                                // 这里简单处理：如果包含 :00 或 :30 则显示，或者根据密度动态调整
+                                // 为了简洁，我们让 ECharts 自动间隔显示，或者全部显示但旋转
+                                return value;
+                            },
+                            interval: 'auto', // 自动间隔
+                            rotate: 0
+                        }, 
+                        splitLine: { show: false }
+                    }
+                ],
+                yAxis: [
+                    { 
+                        gridIndex: 0, // 对应价格图
+                        type: 'value', 
+                        scale: true, // 不从0开始，适应价格波动
+                        name: '价格',
+                        nameTextStyle: { color: '#999', fontSize: 10, padding: [0, 0, 0, 10] },
+                        axisLabel: { 
+                            formatter: function (value) {
+                                return value.toFixed(2);
+                            }
+                        },
+                        splitLine: { show: true, lineStyle: { type: 'dashed', color: '#eee' } }
+                    },
+                    { 
+                        gridIndex: 1, // 对应成交额图
+                        type: 'value', 
+                        scale: true,
+                        name: '成交额',
+                        nameTextStyle: { color: '#999', fontSize: 10, padding: [0, 0, 0, 10] },
+                        axisLabel: { 
+                            formatter: function (value) {
+                                return formatAmount(value);
+                            }
+                        },
+                        splitLine: { show: false }
+                    }
+                ],
+                // 添加数据缩放，方便查看局部
+                dataZoom: [
+                    {
+                        type: 'inside',
+                        xAxisIndex: [0, 1], // 同时控制两个X轴
+                        start: 0,
+                        end: 100
+                    }
+                ],
+                series: [
+                    {
+                        name: '分时价',
+                        type: 'line',
+                        xAxisIndex: 0,
+                        yAxisIndex: 0,
+                        data: priceData, // 直接使用数值数组，对应 category 轴索引
+                        symbol: 'none', // 去掉折线上的点
+                        lineStyle: { width: 2, color: '#3498db' }, // 蓝色分时线
+                        areaStyle: {
+                            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                { offset: 0, color: 'rgba(52, 152, 219, 0.3)' },
+                                { offset: 1, color: 'rgba(52, 152, 219, 0.05)' }
+                            ])
+                        },
+                        smooth: true // 平滑曲线
+                    },
+                    {
+                        name: '均价',
+                        type: 'line',
+                        xAxisIndex: 0,
+                        yAxisIndex: 0,
+                        data: avgPriceData, // 直接使用数值数组
+                        symbol: 'none',
+                        lineStyle: { width: 1, color: '#f39c12', type: 'dashed' }, // 黄色虚线均价
+                        smooth: true
+                    },
+                    {
+                        name: '成交额',
+                        type: 'bar',
+                        xAxisIndex: 1,
+                        yAxisIndex: 1,
+                        data: amountData, // 直接使用数值数组
+                        itemStyle: {
+                            color: function(params) {
+                                // 根据价格涨跌设置柱子颜色，或者统一颜色
+                                // 此处使用紫色系，保持与AI主题一致
+                                return '#8e44ad'; 
+                            }
+                        },
+                        barMaxWidth: 10
                     }
                 ]
             };
