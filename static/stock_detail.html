@@ -646,14 +646,14 @@
                 // 生成用于 Category 轴显示的时间标签 (HH:mm)
                 const timeLabel = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 
+                // 修复：根据用户反馈，主图价格和均价数据大了100倍，此处除以100修正
                 return { 
                     timeLabel: timeLabel, // 用于 X 轴显示
                     timestamp: timestamp, // 用于排序
-                    price: item.price, 
-                    avg_price: item.avg_price,
+                    price: item.price / 100, 
+                    avg_price: item.avg_price / 100,
                     volume: item.volume || 0,
-                    // 修改：成交额除以 100 以符合预期单位
-                    amount: (item.amount || 0) / 100 
+                    amount: item.amount || 0 // 修改：直接使用原始成交额数据，不再除以100
                 };
             }).filter(item => item !== null);
 
@@ -827,10 +827,22 @@
                         yAxisIndex: 1,
                         data: amountData, // 直接使用数值数组
                         itemStyle: {
+                            // 修改：根据价格涨跌动态设置柱子颜色，以体现多空力量
                             color: function(params) {
-                                // 根据价格涨跌设置柱子颜色，或者统一颜色
-                                // 此处使用紫色系，保持与AI主题一致
-                                return '#8e44ad'; 
+                                const index = params.dataIndex;
+                                if (index === 0) return '#8e44ad'; // 第一个点默认紫色
+                                
+                                const currentPrice = priceData[index];
+                                const prevPrice = priceData[index - 1];
+                                
+                                // 如果当前价格高于前一分钟价格，显示红色（涨）；否则显示绿色（跌）
+                                if (currentPrice > prevPrice) {
+                                    return '#e74c3c'; // 红涨
+                                } else if (currentPrice < prevPrice) {
+                                    return '#27ae60'; // 绿跌
+                                } else {
+                                    return '#8e44ad'; // 平盘/默认紫
+                                }
                             }
                         },
                         barMaxWidth: 10
