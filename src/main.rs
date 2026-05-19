@@ -17,7 +17,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::fs;
-use chrono::{Local, Datelike, Timelike};
+use chrono::Datelike;
+use chrono::Timelike;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockInfo {
@@ -106,7 +107,7 @@ struct CacheEntry<T> {
 type DetailCache = Arc<RwLock<HashMap<String, CacheEntry<StockInfo>>>>;
 type MoneyFlowCache = Arc<RwLock<HashMap<String, CacheEntry<MoneyFlow>>>>;
 type MinuteDataCache = Arc<RwLock<HashMap<String, CacheEntry<Vec<MinuteDataPoint>>>>>;
-type KLineDataCache = Arc<RwLock<HashMap<String, CacheEntry<Vec<KLineDataPoint>>>>;
+type KLineDataCache = Arc<RwLock<HashMap<String, CacheEntry<Vec<KLineDataPoint>>>>>;
 
 #[derive(Clone)]
 struct AppState {
@@ -1138,7 +1139,8 @@ async fn get_ai_analysis(
     // 获取资金流
     let money_flow_opt = fetch_money_flow_internal(&normalized_code).await;
     // 获取K线
-    let kline_data_opt = fetch_kline_data_from_em(&normalized_code, "101", 10).await; // 取日K最近10条
+    // 获取K线
+    let kline_data_opt = fetch_kline_data_from_em_internal(&normalized_code, "101", 10).await; // 取日K最近10条
 
     if stock_info_opt.is_none() {
         return Json(json!({"status": "error", "msg": "Failed to fetch stock info"}));
@@ -1534,22 +1536,6 @@ async fn get_stock_minute_data(
             format!("0.{}", normalized_code)
         };
 
-        // 计算预期的交易日描述，用于前端提示
-        let now = Local::now();
-        let weekday = now.weekday().num_days_from_monday(); // 1=Mon, 7=Sun
-        let hour = now.hour();
-        let minute = now.minute();
-        let is_trading_time = (weekday >= 1 && weekday <= 5) && 
-                              ((hour == 9 && minute >= 30) || (hour == 10) || (hour == 11) || 
-                               (hour == 13) || (hour == 14) || (hour == 15 && minute == 0));
-        
-        let mut trade_date_hint = "今日".to_string();
-        if !is_trading_time {
-            // 简单估算上一个交易日，用于提示
-            // 注意：这只是一个提示，实际数据由东财接口决定
-            trade_date_hint = "最近交易日".to_string();
-        }
-
         // 使用东方财富分时数据接口
         // fields2: f51(时间), f52(最新价), f53(均价), f54(成交量(手)), f55(成交额(元))...
         // isclose=1 表示包含收盘价，datalen=240 获取全天数据
@@ -1660,6 +1646,20 @@ async fn get_stock_minute_data(
                                         }
                                         
                                         // println!("Debug: Parsed {} eastmoney minute data points for {}", minute_data.len(), normalized_code);
+                                        
+                                        // 新增：判断当前是否为交易时间
+                                        let now = chrono::Local::now();
+                                        let weekday = now.weekday().num_days_from_monday(); // 0=Mon, 4=Fri
+                                        let hour = now.hour();
+                                        let minute = now.minute();
+                                        let time_val = hour * 60 + minute;
+                                        
+                                        // A股交易时间: 周一至周五, 9:30-11:30, 13:00-15:00
+                                        let is_trading_time = weekday < 5 && (
+                                            (time_val >= 9 * 60 + 30 && time_val < 11 * 60 + 30) ||
+                                            (time_val >= 13 * 60 && time_val < 15 * 60)
+                                        );
+
                                         return Json(json!({
                                             "status": "success",
                                             "data": minute_data,
