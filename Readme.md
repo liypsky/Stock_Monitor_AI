@@ -4,7 +4,7 @@
 
 ## 🚀 功能特性
 
-1. **实时行情监控**：对接新浪财经接口，实时获取A股指数和个股的开盘、收盘、最高、最低、成交量等数据。
+1. **实时行情监控**：对接财经接口，实时获取A股指数和个股的开盘、收盘、最高、最低、成交量等数据。
 2. **自定义配置**：支持通过前端或配置文件动态添加/删除关注的股票和指数，支持调整数据刷新频率。
 3. **多维度图表**：
    - **分时图**：展示当日实时价格走势及均价线。
@@ -26,37 +26,43 @@
 
 项目启动时会自动读取 `setting/config.json` 文件。如果文件不存在，将使用默认配置并自动生成该文件。
 
-### 配置文件 (`setting/config.json`)
+## 配置文件 (`setting/config.json`)
+
 
 ## ⚙️  运行指南
 1. 环境要求
 Rust 工具链 (Nightly 或 Stable)
 Cargo
+
 2. 编译与运行
-bash
-# 克隆项目
-git clone <repository_url>
+
+## ⚙️  克隆项目,运行项目
+
+git clone https://github.com/liypsky/Stock_Monitor_AI.git
 cd stock-monitor-tyi
+cargo run 
 
-# 运行项目
-cargo run --release
-服务默认启动在 http://0.0.0.0:9527。
-
-3. 访问前端
 浏览器打开 http://localhost:9527 即可看到监控首页。
 点击个股可进入详情页查看图表和 AI 分析。
 
-📂 目录结构
-stock-monitor-tyi/
-├── src/
-│   └── main.rs          # 后端核心逻辑
-├── static/
-│   ├── index.html       # 首页监控面板
-│   └── stock_detail.html # 个股详情页（含图表和AI分析）
-├── setting/
-│   └── config.json      # 运行时配置文件（自动生成）
-├── Cargo.toml
-└── Readme.md
+## ⚙️  非编译直接运行指南
+
+进入仓库 Releases 页面，直接下载对应系统压缩包，解压运行即可，无需装 Rust 环境、无需编译.
+1. Windows → 下载Windows 版
+2. Linux → 下载 Linux 版
+3. macOS → 下载 macOS 版
+
+操作步骤:
+1. 下载对应系统压缩包
+2. 解压缩包
+3. 运行程序
+    Windows：双击 stock-monitor.exe
+    Linux/macOS：./stock-monitor
+4. 浏览器打开：http://localhost:9527
+
+# 目录结构
+参考DOC目录下文件结构文档.
+
 
 ⚠️ 免责声明
 本项目仅供学习和技术研究使用。股市有风险，投资需谨慎。AI 分析结果仅供参考，不构成任何投资建议。使用者需自行承担因使用本软件产生的所有风险。
