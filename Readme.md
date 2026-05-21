@@ -1,4 +1,4 @@
-# A股实时监控与AI分析系统 (Stock Monitor TYI)
+# A股实时监控与AI分析系统
 
 这是一个基于 Rust (Axum) 开发的A股实时行情监控服务，支持自定义股票/指数列表、实时数据刷新、分时/K线图表展示，并集成了大模型（LLM）进行智能趋势研判、择时信号分析和拐点检测。
 
@@ -39,13 +39,15 @@ Cargo
 ## ⚙️  克隆项目,运行项目
 
 git clone https://github.com/liypsky/Stock_Monitor_AI.git
+
 cd stock-monitor-tyi
+
 cargo run 
 
 浏览器打开 http://localhost:9527 即可看到监控首页。
 点击个股可进入详情页查看图表和 AI 分析。
 
-## ⚙️  非编译直接运行指南
+## ⚙️  非编译直接运行
 
 进入仓库 Releases 页面，直接下载对应系统压缩包，解压运行即可，无需装 Rust 环境、无需编译.
 1. Windows → 下载Windows 版
@@ -56,8 +58,7 @@ cargo run
 1. 下载对应系统压缩包
 2. 解压缩包
 3. 运行程序
-    Windows：双击 stock-monitor.exe
-    Linux/macOS：./stock-monitor
+    Windows：双击 stock-monitor.exe , Linux/macOS：./stock-monitor
 4. 浏览器打开：http://localhost:9527
 
 # 目录结构
